@@ -1,0 +1,20 @@
+{
+  "name": "web3-bullshit-game",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "hardhat build",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "ai": "node server/ai-player.js",
+    "relayer": "node server/relayer.js",
+    "deploy:localhost": "hardhat run scripts/deploy.ts --network localhost"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox-viem": "^5.0.0",
+    "dotenv": "^16.4.7",
+    "hardhat": "^3.0.0",
+    "typescript": "^5.8.0"
+  }
+}

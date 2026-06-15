@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Web3 吹牛遊戲 Demo</title>
+    <link rel="stylesheet" href="./styles.css?v=20260615-direct-rpc-nonce" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Blockchain Final Project</p>
+          <h1>Web3 吹牛遊戲</h1>
+        </div>
+        <button id="connectWallet">連接錢包</button>
+      </header>
+
+      <section class="status-panel">
+        <div>
+          <span>錢包</span>
+          <strong id="walletAddress">尚未連接</strong>
+        </div>
+        <div>
+          <span>合約地址</span>
+          <strong id="contractAddressLabel">0x5fbdb2315678afecb367f032d93f642f64180aa3</strong>
+          <input id="contractAddress" type="hidden" value="0x5fbdb2315678afecb367f032d93f642f64180aa3" />
+        </div>
+        <div>
+          <span>押金餘額</span>
+          <strong id="depositBalance">-</strong>
+        </div>
+      </section>
+
+      <section class="status-panel compact">
+        <div>
+          <span>查詢押金地址</span>
+          <input id="balanceLookupAddress" placeholder="貼上玩家錢包地址，或連接錢包後自動帶入" />
+        </div>
+        <div>
+          <span>鏈上押金查詢</span>
+          <button id="lookupBalanceButton" type="button">讀取押金</button>
+        </div>
+        <div>
+          <span>提示</span>
+          <strong id="balanceLookupHint">押金存在合約 deposits 裡，重新整理後可重新讀取。</strong>
+        </div>
+      </section>
+
+      <nav class="flow-tabs" aria-label="遊戲流程">
+        <button id="showLobbyButton" type="button" class="tab-button active">大廳</button>
+        <button id="showGameButton" type="button" class="tab-button">遊戲</button>
+        <button id="showDebtButton" type="button" class="tab-button">債券結算</button>
+      </nav>
+
+      <section class="section-shell app-view" id="lobbySection">
+        <div class="section-title">
+          <p class="eyebrow">Room Lobby</p>
+          <h2>先加入房間，滿 4 人後再開始遊戲</h2>
+        </div>
+
+        <div class="lobby-status">
+          <div>
+            <span>房間狀態</span>
+            <strong id="roomStatusText">尚未查詢</strong>
+          </div>
+          <div>
+            <span>玩家人數</span>
+            <strong id="roomPlayerCount">0 / 4</strong>
+          </div>
+          <div>
+            <span>房主</span>
+            <strong id="roomHost">-</strong>
+          </div>
+          <div class="full">
+            <span>已加入玩家</span>
+            <div id="roomPlayers" class="player-list">尚無資料</div>
+          </div>
+          <div class="full">
+            <span>開始遊戲檢查</span>
+            <strong id="startReason">請先查詢或建立房間。</strong>
+          </div>
+          <div class="full">
+            <span>加入房間檢查</span>
+            <strong id="joinReason">請先連接錢包並查詢房間。</strong>
+          </div>
+        </div>
+
+        <div class="grid">
+          <article class="panel">
+            <h3>資金質押</h3>
+            <label>暱稱</label>
+            <div class="input-action">
+              <input id="nicknameInput" maxlength="16" placeholder="輸入對局暱稱" />
+              <button id="saveNicknameButton" type="button" class="secondary">儲存</button>
+            </div>
+            <label>押金 ETH</label>
+            <input id="depositAmount" value="0.5" />
+            <button id="depositButton">存入押金</button>
+            <label>提款 ETH</label>
+            <input id="withdrawAmount" value="0.1" />
+            <button id="withdrawButton">提領押金</button>
+          </article>
+
+          <article class="panel">
+            <h3>房間操作</h3>
+            <label>Room ID</label>
+            <div class="input-action">
+              <input id="roomText" />
+              <button id="newRoomButton" type="button" class="secondary">新房號</button>
+            </div>
+            <small id="roomHint">若房間已存在，請改按「加入房間」或產生新房號。</small>
+            <label>每位玩家最低押金 ETH</label>
+            <input id="stakeRequired" value="100" />
+            <div class="button-row">
+              <button id="createRoomButton">建立房間</button>
+              <button id="joinRoomButton" class="secondary">加入房間</button>
+            </div>
+            <button id="refreshRoomButton" type="button" class="secondary">更新房間狀態</button>
+            <label>牌組承諾 Hash</label>
+            <input id="deckCommitment" placeholder="留空會自動產生" />
+            <div class="button-row">
+              <button id="startGameButton">開始遊戲</button>
+              <button id="addBotsButton" type="button" class="secondary">加入電腦玩家</button>
+            </div>
+            <button id="clearHostedRoomButton" type="button" class="secondary">解除舊房間鎖</button>
+          </article>
+        </div>
+      </section>
+
+      <section class="game-table app-view is-hidden" id="gameSection">
+        <div class="table-header">
+          <div>
+            <p class="eyebrow">Game Table</p>
+            <h2>吹牛牌桌</h2>
+          </div>
+          <div class="round-state">
+            <span id="tableStatus">等待開始遊戲</span>
+            <button id="openTableButton" type="button">重新整理牌桌</button>
+          </div>
+        </div>
+
+        <button id="openRulesButton" type="button" class="secondary compact-button">規則</button>
+
+        <div class="modal-backdrop is-hidden" id="rulesModal">
+          <div class="modal rules-modal">
+            <button id="closeRulesButton" type="button" class="modal-close" aria-label="關閉規則">×</button>
+            <h2>規則</h2>
+            <div class="rule-strip" id="ruleStrip">
+          <div>
+            <strong>鬼牌規則</strong>
+            <span>牌組加入 2 張鬼牌，鬼牌可視為任意點數。</span>
+          </div>
+          <div>
+            <strong>出牌限制</strong>
+            <span>每次出 1 至 3 張。同一輪需喊同點數；所有其他玩家 Pass 後，由最後出牌者喊新點數。</span>
+          </div>
+          <div>
+            <strong>隨機發牌</strong>
+            <span id="dealStatus">54 張牌全數發給玩家；湊滿 4 張同點數才放入棄牌堆。</span>
+          </div>
+          <div>
+            <strong>牌組承諾</strong>
+            <span id="tableDeckCommitment">尚未發牌</span>
+          </div>
+        </div>
+
+          </div>
+        </div>
+
+        <div class="seats" id="tableSeats">
+          <div class="seat active">
+            <strong>你</strong>
+            <span id="seatYou">目前錢包</span>
+            <small>手牌 <b id="handCount">14</b></small>
+          </div>
+          <div class="seat"><strong>玩家 B</strong><span>等待同步</span><small>手牌 14</small></div>
+          <div class="seat"><strong>玩家 C</strong><span>等待同步</span><small>手牌 13</small></div>
+          <div class="seat"><strong>玩家 D</strong><span>等待同步</span><small>手牌 13</small></div>
+        </div>
+
+        <div class="table-surface">
+          <div class="pile">
+            <span>目前出牌者</span>
+            <strong id="currentTurn">尚未開始</strong>
+            <small id="turnHint">出牌會依房間玩家順序輪流。</small>
+            <hr />
+            <span>本輪喊牌</span>
+            <strong id="currentClaim">尚未喊牌</strong>
+            <small id="lastMove">等待玩家行動</small>
+            <hr />
+            <span>出牌堆</span>
+            <strong id="playPileCount">0 張</strong>
+            <small id="discardPileCount">棄牌堆 0 張</small>
+          </div>
+          <div class="cards" id="handCards"></div>
+          <div class="action-cluster">
+          <section class="table-feed" aria-label="本局紀錄">
+            <div class="feed-title">
+              <strong>本局紀錄</strong>
+            </div>
+            <div id="tableEventFeed"></div>
+          </section>
+          <div class="action-panel">
+            <label id="selectedCountLabel">已選 0 張</label>
+            <label>喊牌點數</label>
+            <select id="claimRank">
+              <option>A</option><option>2</option><option>3</option><option>4</option>
+              <option>5</option><option>6</option><option>7</option><option>8</option>
+              <option>9</option><option>10</option><option>J</option><option>Q</option><option>K</option>
+            </select>
+            <button id="playClaimButton" type="button">出牌 / 喊牌</button>
+            <button id="passButton" type="button" class="secondary">Pass</button>
+            <button id="challengeButton" type="button" class="secondary">抓吹牛</button>
+            <button id="forfeitButton" type="button" class="danger">認輸退出</button>
+          </div>
+          </div>
+        </div>
+
+        <div class="claim-board">
+          <div>
+            <span>上一手玩家</span>
+            <strong id="lastClaimActor">尚無</strong>
+          </div>
+          <div>
+            <span>宣稱內容</span>
+            <strong id="lastClaimText">尚無</strong>
+          </div>
+          <div>
+            <span>實際翻牌</span>
+            <strong id="revealedCards">尚未抓牌</strong>
+          </div>
+          <div class="full">
+            <span>本局翻牌</span>
+            <strong id="roundReveal">尚未抓牌</strong>
+          </div>
+          <div>
+            <span>判定結果</span>
+            <strong id="challengeResult">尚未判定</strong>
+          </div>
+          <div class="full is-hidden">
+            <strong id="debtSuggestion"></strong>
+          </div>
+          <div>
+            <span>勝利者</span>
+            <strong id="winnerText">尚未分出勝負</strong>
+          </div>
+          <div>
+            <span>最後結算</span>
+            <button id="settleFinalButton" type="button" class="is-hidden">自動結算中</button>
+            <div class="button-row is-hidden" id="postGameActions">
+              <button id="rematchButton" type="button">再開一局</button>
+              <button id="endGameButton" type="button" class="secondary">結束遊戲</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="modal-backdrop is-hidden" id="startGameModal">
+        <div class="modal">
+          <h2>確認開始遊戲</h2>
+          <p>遊戲開始後不能隨意退出。若中途認輸退出，合約會從你的押金扣除入場費，支付給其他玩家。</p>
+          <div class="button-row">
+            <button id="confirmStartGameButton" type="button">確認開始</button>
+            <button id="cancelStartGameButton" type="button" class="secondary">取消</button>
+          </div>
+        </div>
+      </div>
+
+      <section class="section-shell app-view is-hidden" id="debtSection">
+        <div class="section-title">
+          <p class="eyebrow">Final Settlement</p>
+          <h2>押金餘額與領出</h2>
+        </div>
+
+        <div class="grid settlement-grid">
+          <article class="panel">
+            <h3>我的押金</h3>
+            <label>合約餘額</label>
+            <input id="settlementBalance" readonly placeholder="連接錢包後自動讀取" />
+            <label>提領金額 ETH</label>
+            <input id="settlementWithdrawAmount" value="100" />
+            <button id="settlementWithdrawButton">領出到錢包</button>
+            <button id="refreshSettlementBalanceButton" type="button" class="secondary">重新讀取餘額</button>
+          </article>
+
+          <article class="panel is-hidden" id="settlementStatusPanel">
+            <h3>本局自動結算狀態</h3>
+            <label>贏家</label>
+            <input id="settlementWinner" readonly placeholder="遊戲結束後自動代入" />
+            <label>扣款明細</label>
+            <textarea id="settlementPreview" readonly placeholder="遊戲結束後由系統自動結算"></textarea>
+            <button id="settleDebtButton" type="button" class="secondary">重送自動結算</button>
+            <button id="finishGameButton" type="button" class="secondary">結束遊戲</button>
+            <input id="winnerAddress" class="is-hidden" />
+            <input id="debtAmount" class="is-hidden" value="1" />
+            <input id="debtNonce" class="is-hidden" value="1" />
+            <input id="expirationSeconds" class="is-hidden" value="3600" />
+            <button id="signDebtButton" type="button" class="is-hidden">簽署展示債券</button>
+            <textarea id="signatureOutput" class="is-hidden"></textarea>
+            <textarea id="settleNoteInput" class="is-hidden" placeholder="internal debt payload"></textarea>
+          </article>
+        </div>
+      </section>
+
+      <section class="events">
+        <h2>事件與交易紀錄</h2>
+        <div id="eventLog"></div>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+    <script src="./app.js?v=20260615-direct-rpc-nonce"></script>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+node_modules/
+artifacts/
+cache/
+logs/
+requirements_pptx_extract/
+.env
+.env.*
+!/.env.example
