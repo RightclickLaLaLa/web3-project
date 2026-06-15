@@ -401,6 +401,8 @@ h3 {
   align-content: center;
   gap: 10px;
   text-align: center;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .pile hr {
@@ -417,6 +419,18 @@ h3 {
 .pile strong {
   color: var(--accent);
   font-size: 30px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.pile small,
+.claim-board strong,
+.table-notes strong,
+.log-item {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .cards {
@@ -597,6 +611,7 @@ button.danger {
   color: var(--muted);
   font-family: Consolas, monospace;
   font-size: 13px;
+  overflow-wrap: anywhere;
   word-break: break-word;
 }
 

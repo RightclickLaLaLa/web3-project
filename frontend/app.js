@@ -37,6 +37,7 @@ let provider;
 let signer;
 let contract;
 let readProvider;
+let eventContract;
 let account;
 let connecting = false;
 let walletEventsReady = false;
@@ -74,6 +75,8 @@ let challengeAccepted = false;
 let claimSequence = 0;
 let resolvingChallenge = false;
 const passedPlayers = new Set();
+const finalReviewActions = new Set();
+const seenContractEvents = new Set();
 const CHALLENGE_HARD_LOCK_MS = 10000;
 const FINAL_CHALLENGE_WINDOW_MS = 30000;
 const playerHands = new Map();
@@ -181,6 +184,42 @@ function tableLog(message, state = "closed") {
     if (state === "closed") tableItem.classList.add("is-closed");
     tableItem.textContent = message;
     tableEventFeed.prepend(tableItem);
+  }
+}
+
+function eventKey(name, event) {
+  return `${name}:${event?.log?.transactionHash || event?.transactionHash || "no-tx"}:${event?.log?.index ?? event?.index ?? "no-index"}`;
+}
+
+function formatEtherText(value) {
+  try {
+    return `${ethers.formatEther(value)} ETH`;
+  } catch (_) {
+    return String(value);
+  }
+}
+
+function formatContractEvent(name, args) {
+  const values = Array.from(args || []);
+  switch (name) {
+    case "Deposit":
+      return `押金存入：${short(values[0])} 存入 ${formatEtherText(values[1])}，餘額 ${formatEtherText(values[2])}`;
+    case "Withdrawal":
+      return `押金提出：${short(values[0])} 提出 ${formatEtherText(values[1])}，餘額 ${formatEtherText(values[2])}`;
+    case "RoomCreated":
+      return `房間建立：房主 ${short(values[1])}，最低押金 ${formatEtherText(values[2])}`;
+    case "PlayerJoined":
+      return `玩家加入：${short(values[1])}，目前 ${values[2].toString()} 位`;
+    case "GameStarted":
+      return `遊戲開始：牌組承諾 ${short(values[1])}`;
+    case "GameFinished":
+      return "遊戲結束：合約狀態已更新";
+    case "ChallengeSettled":
+      return `抓吹牛結算：輸家 ${short(values[1])}，贏家 ${short(values[2])}，金額 ${formatEtherText(values[6])}`;
+    case "DebtSettled":
+      return `債券結算：${short(values[1])} 支付 ${formatEtherText(values[3])} 給 ${short(values[2])}`;
+    default:
+      return name;
   }
 }
 
@@ -388,6 +427,7 @@ function resetTurnState(players = tablePlayers, clearHands = false) {
   lastPlayedBy = null;
   winnerAddress = null;
   pendingWinner = null;
+  finalReviewActions.clear();
   finalSettlementInProgress = false;
   finalSettlementDone = false;
   rematchVoteInProgress = false;
@@ -559,6 +599,7 @@ function confirmPendingWinner(reason = "最後一手通過") {
   challengeAccepted = false;
   challengeWindowToken += 1;
   challengeWindowExpiresAt = 0;
+  finalReviewActions.clear();
   clearChallengeWindowTimer();
   clearBotChallengeTimers();
   closeChallengeableTableLogs();
@@ -575,10 +616,29 @@ function checkWinner(player) {
   if (!player) return false;
   if (getPlayerHand(player).length !== 0) return false;
   pendingWinner = player;
+  finalReviewActions.clear();
   $("winnerText").textContent = `待確認：${playerLabel(player)}`;
   $("lastMove").textContent = `${playerLabel(player)} 已出完手牌，其他玩家仍可抓最後一手。`;
   $("debtSuggestion").textContent = `最後一手進入 30 秒審查，其他玩家可同時抓吹牛；無人成功抓則 ${playerLabel(player)} 獲勝。`;
   log(`${playerLabel(player)} 已出完手牌，最後 30 秒可被其他玩家抓吹牛。`);
+  return true;
+}
+
+function markFinalReviewAction(player, label = "放棄抓吹牛") {
+  if (!pendingWinner || winnerAddress || resolvingChallenge) return false;
+  if (!player || sameAddress(player, pendingWinner)) return false;
+
+  const key = handKey(player);
+  if (!finalReviewActions.has(key)) {
+    finalReviewActions.add(key);
+    log(`${playerLabel(player)} ${label}。`);
+    tableLog(`${playerLabel(player)} ${label}`);
+  }
+
+  const reviewers = tablePlayers.filter((candidate) => !sameAddress(candidate, pendingWinner));
+  const allReviewed = reviewers.length > 0 && reviewers.every((candidate) => finalReviewActions.has(handKey(candidate)));
+  if (allReviewed) confirmPendingWinner("所有其他玩家都已放棄抓吹牛");
+  updateControls();
   return true;
 }
 
@@ -925,7 +985,8 @@ function updateControls() {
   const botTurn = Boolean(current && isBot(current));
   const gameOver = Boolean(winnerAddress);
   const finalPending = Boolean(pendingWinner);
-  const canPass = ownTurn && !gameOver && !finalPending && !resolvingChallenge && !challengeHardLock && Boolean(roundRank && lastPlayedBy && !sameAddress(lastPlayedBy, account));
+  const canFinalPass = Boolean(finalPending && account && challengeWindowOpen && !gameOver && !resolvingChallenge && !sameAddress(pendingWinner, account) && !finalReviewActions.has(handKey(account)));
+  const canPass = canFinalPass || (ownTurn && !gameOver && !finalPending && !resolvingChallenge && !challengeHardLock && Boolean(roundRank && lastPlayedBy && !sameAddress(lastPlayedBy, account)));
   const canChallenge = Boolean(account && challengeWindowOpen && lastClaim && lastActor && !sameAddress(lastActor, account) && !gameOver && !resolvingChallenge);
 
   if ($("playClaimButton")) $("playClaimButton").disabled = !ownTurn || gameOver || finalPending || resolvingChallenge || challengeHardLock || botTurn;
@@ -1051,7 +1112,10 @@ async function runBotChallengeRequest(bot, token, expectedRoundStamp, expectedAc
     log(`${playerLabel(bot)} AI 判斷失敗，改用本地抓牌規則：${err.message || err}`);
   }
 
-  if (!wantsChallenge) return false;
+  if (!wantsChallenge) {
+    if (pendingWinner) markFinalReviewAction(bot, "放棄抓吹牛");
+    return false;
+  }
   if (!canAcceptChallengeRequest(bot, token, expectedRoundStamp, expectedActionStamp, expectedClaimSequence)) {
     log(`${playerLabel(bot)} 抓吹牛請求被拒絕：已超時或不是當前回合。`);
     return false;
@@ -1435,11 +1499,16 @@ function setupWalletEvents() {
 
 async function ensureListeners() {
   const game = await getContract();
+  if (eventContract) eventContract.removeAllListeners();
+  eventContract = game;
   game.removeAllListeners();
   for (const name of ["Deposit", "Withdrawal", "RoomCreated", "PlayerJoined", "GameStarted", "GameFinished", "ChallengeSettled", "DebtSettled"]) {
     game.on(name, async (...args) => {
       const event = args.at(-1);
-      log(`${name}：${JSON.stringify(event.args, (_, value) => typeof value === "bigint" ? value.toString() : value)}`);
+      const key = eventKey(name, event);
+      if (seenContractEvents.has(key)) return;
+      seenContractEvents.add(key);
+      log(formatContractEvent(name, event.args));
       await refreshRoomStatus();
     });
   }
@@ -2005,9 +2074,11 @@ wire("rulesModal", (event) => {
 
 function applyPass(player) {
   clearBotTimer();
+  if (pendingWinner) {
+    return markFinalReviewAction(player, "Pass，放棄抓吹牛");
+  }
   const turnPlayer = currentTurnPlayer();
   if (!turnPlayer) return log("Pass 失敗：尚未同步玩家順序。");
-  if (pendingWinner) return log("Pass 失敗：最後一手審查中，只能抓吹牛或等待結算。");
   if (!sameAddress(turnPlayer, player)) return log(`Pass 失敗：目前輪到 ${playerLabel(turnPlayer)}。`);
   if (challengeHardLock) return log("Pass 失敗：前 10 秒只能抓吹牛，稍後才能 Pass。");
   if (!roundRank || !lastPlayedBy) return log("Pass 失敗：新回合第一位玩家必須出牌，不能 pass。");
