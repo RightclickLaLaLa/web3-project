@@ -24,7 +24,6 @@ contract Web3BullshitGame {
     mapping(address => uint256) public deposits;
     mapping(bytes32 => Room) private rooms;
     mapping(bytes32 => mapping(address => bool)) public isPlayerInRoom;
-    mapping(bytes32 => mapping(address => bool)) public playerReady;
     mapping(bytes32 => mapping(address => bool)) public rematchVotes;
     mapping(bytes32 => uint256) public rematchVoteCount;
     mapping(bytes32 => uint256) public rematchVoteStartedAt;
@@ -37,7 +36,6 @@ contract Web3BullshitGame {
     event RoomCreated(bytes32 indexed roomId, address indexed host, uint256 stakeRequired);
     event PlayerJoined(bytes32 indexed roomId, address indexed player, uint256 playerCount);
     event PlayerRemoved(bytes32 indexed roomId, address indexed player, uint256 playerCount);
-    event PlayerReady(bytes32 indexed roomId, address indexed player, bool ready);
     event RematchVoted(bytes32 indexed roomId, address indexed player, bool approve, uint256 yesVotes);
     event RematchExpired(bytes32 indexed roomId, uint256 yesVotes);
     event GameStarted(bytes32 indexed roomId, bytes32 indexed deckCommitment);
@@ -87,7 +85,6 @@ contract Web3BullshitGame {
     error InvalidPlayerCount();
     error TransferFailed();
     error InvalidClaim();
-    error PlayersNotReady();
     error RematchNotApproved();
     error SettlementAlreadyExecuted();
 
@@ -182,7 +179,6 @@ contract Web3BullshitGame {
         room.players[index] = room.players[room.players.length - 1];
         room.players.pop();
         isPlayerInRoom[roomId][player] = false;
-        playerReady[roomId][player] = false;
         if (rematchVotes[roomId][player]) {
             rematchVotes[roomId][player] = false;
             rematchVoteCount[roomId] -= 1;
@@ -222,8 +218,6 @@ contract Web3BullshitGame {
             if (rematchVoteCount[roomId] == 0) {
                 rematchVoteStartedAt[roomId] = 0;
             }
-            playerReady[roomId][msg.sender] = false;
-            emit PlayerReady(roomId, msg.sender, false);
         }
         emit RematchVoted(roomId, msg.sender, approve, rematchVoteCount[roomId]);
     }
@@ -249,20 +243,7 @@ contract Web3BullshitGame {
         room.players[index] = room.players[room.players.length - 1];
         room.players.pop();
         isPlayerInRoom[roomId][msg.sender] = false;
-        playerReady[roomId][msg.sender] = false;
         emit PlayerRemoved(roomId, msg.sender, room.players.length);
-    }
-
-    function setReady(bytes32 roomId, bool ready)
-        external
-        roomExists(roomId)
-    {
-        RoomStatus status = rooms[roomId].status;
-        require(status == RoomStatus.Lobby || status == RoomStatus.Finished, "Room is not readyable");
-        if (!isPlayerInRoom[roomId][msg.sender]) revert NotPlayer();
-
-        playerReady[roomId][msg.sender] = ready;
-        emit PlayerReady(roomId, msg.sender, ready);
     }
 
     function startGame(bytes32 roomId, bytes32 deckCommitment)
@@ -282,7 +263,6 @@ contract Web3BullshitGame {
         for (uint256 i = 0; i < room.players.length; i++) {
             address player = room.players[i];
             if (deposits[player] < room.stakeRequired) revert InsufficientDeposit();
-            if (!playerReady[roomId][player]) revert PlayersNotReady();
         }
 
         room.deckCommitment = deckCommitment;
@@ -290,7 +270,6 @@ contract Web3BullshitGame {
         room.status = RoomStatus.Active;
         for (uint256 i = 0; i < room.players.length; i++) {
             address player = room.players[i];
-            playerReady[roomId][player] = false;
             if (rematchVotes[roomId][player]) {
                 rematchVotes[roomId][player] = false;
             }
@@ -518,20 +497,6 @@ contract Web3BullshitGame {
 
     function roomCount() external view returns (uint256) {
         return roomIds.length;
-    }
-
-    function areAllPlayersReady(bytes32 roomId)
-        external
-        view
-        roomExists(roomId)
-        returns (bool)
-    {
-        Room storage room = rooms[roomId];
-        if (room.players.length != 4) return false;
-        for (uint256 i = 0; i < room.players.length; i++) {
-            if (!playerReady[roomId][room.players[i]]) return false;
-        }
-        return true;
     }
 
 }

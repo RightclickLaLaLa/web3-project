@@ -1,5 +1,5 @@
-﻿const CONTRACT_ADDRESS = "0x4826533b4897376654bb4d4ad88b7fafd0c98528";
-const APP_VERSION = "20260616-room-event-sync";
+﻿const CONTRACT_ADDRESS = "0x1291be112d480055dafd8a610b7d1e203891c274";
+const APP_VERSION = "20260616-offchain-ready";
 const LOCAL_RPC_URL = "http://127.0.0.1:8545";
 const PUBLIC_RPC_HOST = "rightclickhohoho.dpdns.org";
 const MAX_CLAIM_COUNT = 6;
@@ -12,13 +12,10 @@ const abi = [
   "function joinRoom(bytes32 roomId)",
   "function removeLobbyPlayer(bytes32 roomId,address player)",
   "function leaveLobbyRoom(bytes32 roomId)",
-  "function setReady(bytes32 roomId,bool ready)",
   "function voteRematch(bytes32 roomId,bool approve)",
-  "function playerReady(bytes32 roomId,address player) view returns (bool)",
   "function rematchVoteCount(bytes32 roomId) view returns (uint256)",
   "function rematchVoteStartedAt(bytes32 roomId) view returns (uint256)",
   "function rematchVotes(bytes32 roomId,address player) view returns (bool)",
-  "function areAllPlayersReady(bytes32 roomId) view returns (bool)",
   "function startGame(bytes32 roomId,bytes32 deckCommitment)",
   "function finishGame(bytes32 roomId)",
   "function cancelLobbyRoom(bytes32 roomId)",
@@ -35,7 +32,6 @@ const abi = [
   "event RoomCreated(bytes32 indexed roomId,address indexed host,uint256 stakeRequired)",
   "event PlayerJoined(bytes32 indexed roomId,address indexed player,uint256 playerCount)",
   "event PlayerRemoved(bytes32 indexed roomId,address indexed player,uint256 playerCount)",
-  "event PlayerReady(bytes32 indexed roomId,address indexed player,bool ready)",
   "event RematchVoted(bytes32 indexed roomId,address indexed player,bool approve,uint256 yesVotes)",
   "event RematchExpired(bytes32 indexed roomId,uint256 yesVotes)",
   "event GameStarted(bytes32 indexed roomId,bytes32 indexed deckCommitment)",
@@ -283,8 +279,6 @@ function formatContractEvent(name, args) {
       return `玩家加入：${short(values[1])}，目前 ${values[2].toString()} 位`;
     case "PlayerRemoved":
       return `玩家移除：${short(values[1])}，目前 ${values[2].toString()} 位`;
-    case "PlayerReady":
-      return `${short(values[1])} ${values[2] ? "已準備" : "取消準備"}`;
     case "RematchVoted":
       return `${short(values[1])} ${values[2] ? "同意" : "取消同意"}再開一局，目前 ${values[3].toString()} 票`;
     case "RematchExpired":
@@ -339,7 +333,6 @@ function explainError(err) {
   if (message.includes("RoomAlreadyExists")) return "房間已存在，請加入房間或換新房號。";
   if (message.includes("AlreadyJoined")) return "你已經加入這個房間。";
   if (message.includes("InvalidPlayerCount")) return "玩家人數不符合要求：開始遊戲需要剛好 4 位玩家。";
-  if (message.includes("PlayersNotReady")) return "不能開始：仍有玩家尚未準備。";
   if (message.includes("RematchNotApproved")) return "不能開始：再開一局投票尚未過半。";
   if (message.includes("InsufficientDeposit")) return "押金不足，請先存入足夠 ETH。";
   if (message.includes("Unauthorized")) return "沒有權限：只有房主可以開始或結束遊戲。";
@@ -1388,6 +1381,45 @@ function mergeRoomWithCache(room) {
   return room;
 }
 
+function readyMapFromStatus(result, players = []) {
+  const ready = result?.ready || {};
+  return new Map(Array.from(players || []).map((player) => [handKey(player), Boolean(ready[player] ?? ready[ethers.getAddress(player)] ?? ready[handKey(player)])]));
+}
+
+async function fetchReadyStatus(players = []) {
+  try {
+    const response = await fetch(`${getRelayerUrl()}/rooms/ready-status?roomId=${encodeURIComponent(roomId())}`);
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || !result.ok) throw new Error(result.error || `Relayer error ${response.status}`);
+    return readyMapFromStatus(result.result, players);
+  } catch (err) {
+    log(`準備狀態同步失敗：${explainError(err)}`);
+    return new Map(Array.from(players || []).map((player) => [handKey(player), isBot(player)]));
+  }
+}
+
+async function setOffchainReady(player, ready) {
+  const response = await fetch(`${getRelayerUrl()}/rooms/ready`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ roomId: roomId(), player, ready })
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.ok) throw new Error(result.error || `Relayer error ${response.status}`);
+  return result.result;
+}
+
+async function clearOffchainReady() {
+  const response = await fetch(`${getRelayerUrl()}/rooms/ready-clear`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ roomId: roomId() })
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || !result.ok) throw new Error(result.error || `Relayer error ${response.status}`);
+  return result.result;
+}
+
 async function updateReadyStatus(room) {
   if (!room) return;
   const status = Number(room.status);
@@ -1417,15 +1449,7 @@ async function updateReadyStatus(room) {
     renderRoomPlayers(players, status);
     return;
   }
-  const game = getReadContract();
-  const entries = await Promise.all(players.map(async (player) => {
-    try {
-      return [handKey(player), await game.playerReady(roomId(), player)];
-    } catch (_err) {
-      return [handKey(player), false];
-    }
-  }));
-  roomReadyStatus = new Map(entries);
+  roomReadyStatus = await fetchReadyStatus(players);
   renderRoomPlayers(players, status);
   $("startReason").textContent = getStartBlockReason(room);
   updateControls();
@@ -1790,7 +1814,7 @@ async function ensureListeners() {
   if (eventContract) eventContract.removeAllListeners();
   eventContract = game;
   game.removeAllListeners();
-  for (const name of ["Deposit", "Withdrawal", "RoomCreated", "PlayerJoined", "PlayerRemoved", "PlayerReady", "RematchVoted", "RematchExpired", "GameStarted", "GameFinished", "ChallengeSettled", "FinalWinnerSettled", "FinalPenaltiesSettled", "AutoFinalSettlementTriggered", "PlayerForfeited"]) {
+  for (const name of ["Deposit", "Withdrawal", "RoomCreated", "PlayerJoined", "PlayerRemoved", "RematchVoted", "RematchExpired", "GameStarted", "GameFinished", "ChallengeSettled", "FinalWinnerSettled", "FinalPenaltiesSettled", "AutoFinalSettlementTriggered", "PlayerForfeited"]) {
     game.on(name, async (...args) => {
       const event = args.at(-1);
       const key = eventKey(name, event);
@@ -1880,7 +1904,6 @@ wire("joinRoomButton", async () => {
 wire("refreshRoomButton", refreshRoomStatus);
 
 wire("readyButton", async () => {
-  const game = await getContract();
   const room = await refreshRoomStatus();
   if (!room) return log("準備失敗：找不到房間。");
   const status = Number(room.status);
@@ -1888,7 +1911,11 @@ wire("readyButton", async () => {
   if (!account || !players.some((player) => sameAddress(player, account))) return log("準備失敗：你不在這個房間裡。");
   if (![1, 3].includes(status)) return log("準備失敗：只有大廳或已結束房間可以準備。");
   const nextReady = !roomReadyStatus.get(handKey(account));
-  await wait(await game.setReady(roomId(), nextReady, await txOverrides()), nextReady ? "準備" : "取消準備");
+  const result = await setOffchainReady(account, nextReady);
+  roomReadyStatus = readyMapFromStatus(result, players);
+  log(nextReady ? "已準備。" : "已取消準備。");
+  renderRoomPlayers(players, status);
+  updateControls();
   await refreshRoomStatus();
 });
 
@@ -1966,6 +1993,8 @@ async function startGameConfirmed() {
   const commitment = $("deckCommitment").value.trim() || ethers.keccak256(ethers.toUtf8Bytes(`deck:${Date.now()}`));
   $("deckCommitment").value = commitment;
   await wait(await game.startGame(roomId(), commitment, await txOverrides()), "開始遊戲");
+  await clearOffchainReady().catch(() => {});
+  roomReadyStatus = new Map();
   const startedRoom = mergeRoomWithCache(await game.getRoom(roomId()));
   const startedPlayers = Array.from(startedRoom.players);
   updateRoomPanel(startedRoom);
@@ -2057,7 +2086,9 @@ async function startRematchRound() {
     if (!Array.from(room.players).some((player) => sameAddress(player, account))) return log("再開一局失敗：你不在這個房間裡。");
 
     await wait(await game.voteRematch(roomId(), true, await txOverrides()), "再開一局投票");
-    await wait(await game.setReady(roomId(), true, await txOverrides()), "再開一局準備");
+    const readyResult = await setOffchainReady(account, true);
+    roomReadyStatus = readyMapFromStatus(readyResult, Array.from(room.players));
+    log("已準備再開一局。");
     if (Array.from(room.players).some(isBot)) {
       try {
         await relayerReadyBots();
@@ -2174,6 +2205,12 @@ async function relayerReadyBots() {
   });
   const result = await response.json().catch(() => ({}));
   if (!response.ok || !result.ok) throw new Error(result.error || `Relayer error ${response.status}`);
+  if (result.result?.readyStatus) {
+    const players = result.result.readyStatus.players || tablePlayers;
+    roomReadyStatus = readyMapFromStatus(result.result.readyStatus, players);
+    renderRoomPlayers(players, Number(result.result.readyStatus.status || latestRoomSnapshot?.status || 1));
+    updateControls();
+  }
   return result.result;
 }
 
@@ -2274,6 +2311,7 @@ $("removeBotButton").onclick = async () => {
     } else {
       const game = await getContract();
       await wait(await game.removeLobbyPlayer(roomId(), target, await txOverrides()), "移除玩家");
+      await setOffchainReady(target, false).catch(() => {});
     }
     await waitForRoomPlayerEventOrPoll({
       eventName: "PlayerRemoved",

@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+﻿import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { network } from "hardhat";
 
@@ -26,10 +26,6 @@ describe("Web3BullshitGame", async function () {
     await game.write.joinRoom([roomId], { account: player2.account });
     await game.write.joinRoom([roomId], { account: player3.account });
     await game.write.joinRoom([roomId], { account: player4.account });
-    await game.write.setReady([roomId, true], { account: host.account });
-    await game.write.setReady([roomId, true], { account: player2.account });
-    await game.write.setReady([roomId, true], { account: player3.account });
-    await game.write.setReady([roomId, true], { account: player4.account });
     await game.write.startGame([roomId, deckCommitment], { account: host.account });
 
     return { game, host, player2, player3, player4, stake, roomId };
@@ -82,11 +78,6 @@ describe("Web3BullshitGame", async function () {
     await game.write.joinRoom([roomId], { account: player2.account });
     await game.write.joinRoom([roomId], { account: player3.account });
     await game.write.joinRoom([roomId], { account: player4.account });
-
-    await game.write.setReady([roomId, true], { account: host.account });
-    await game.write.setReady([roomId, true], { account: player2.account });
-    await game.write.setReady([roomId, true], { account: player3.account });
-    await game.write.setReady([roomId, true], { account: player4.account });
     await game.write.withdraw([1n], { account: player4.account });
 
     await viem.assertions.revertWithCustomError(
@@ -96,63 +87,28 @@ describe("Web3BullshitGame", async function () {
     );
   });
 
-  it("requires every player to be ready before starting", async function () {
-    const { game, host, player2, player3, player4 } = await networkHelpers.loadFixture(deployGame);
-    const stake = 100000000000000000000n;
-    const roomId = "0xb0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0";
-    const deckCommitment = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-
-    await game.write.deposit({ account: host.account, value: stake });
-    await game.write.deposit({ account: player2.account, value: stake });
-    await game.write.deposit({ account: player3.account, value: stake });
-    await game.write.deposit({ account: player4.account, value: stake });
-    await game.write.createRoom([roomId, stake], { account: host.account });
-    await game.write.joinRoom([roomId], { account: player2.account });
-    await game.write.joinRoom([roomId], { account: player3.account });
-    await game.write.joinRoom([roomId], { account: player4.account });
-    await game.write.setReady([roomId, true], { account: host.account });
-    await game.write.setReady([roomId, true], { account: player2.account });
-    await game.write.setReady([roomId, true], { account: player3.account });
-
-    await viem.assertions.revertWithCustomError(
-      game.write.startGame([roomId, deckCommitment], { account: host.account }),
-      game,
-      "PlayersNotReady",
-    );
-  });
-
-  it("can restart a finished room after every player readies again", async function () {
-    const { game, host, player2, player3, player4, roomId } = await startedGameFixture();
+  it("can restart a finished room after a majority rematch vote", async function () {
+    const { game, host, player2, player3, roomId } = await startedGameFixture();
     const nextDeckCommitment = "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
     await game.write.finishGame([roomId], { account: host.account });
     await game.write.voteRematch([roomId, true], { account: host.account });
     await game.write.voteRematch([roomId, true], { account: player2.account });
     await game.write.voteRematch([roomId, true], { account: player3.account });
-    await game.write.setReady([roomId, true], { account: host.account });
-    await game.write.setReady([roomId, true], { account: player2.account });
-    await game.write.setReady([roomId, true], { account: player3.account });
-    await game.write.setReady([roomId, true], { account: player4.account });
 
-    assert.equal(await game.read.areAllPlayersReady([roomId]), true);
     assert.equal(await game.read.rematchVoteCount([roomId]), 3n);
     await game.write.startGame([roomId, nextDeckCommitment], { account: host.account });
     const room = await game.read.getRoom([roomId]);
     assert.equal(room[3], 2);
-    assert.equal(await game.read.areAllPlayersReady([roomId]), false);
     assert.equal(await game.read.rematchVoteCount([roomId]), 0n);
   });
 
   it("requires a majority rematch vote before restarting a finished room", async function () {
-    const { game, host, player2, player3, player4, roomId } = await startedGameFixture();
+    const { game, host, roomId } = await startedGameFixture();
     const nextDeckCommitment = "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
 
     await game.write.finishGame([roomId], { account: host.account });
     await game.write.voteRematch([roomId, true], { account: host.account });
-    await game.write.setReady([roomId, true], { account: host.account });
-    await game.write.setReady([roomId, true], { account: player2.account });
-    await game.write.setReady([roomId, true], { account: player3.account });
-    await game.write.setReady([roomId, true], { account: player4.account });
 
     await viem.assertions.revertWithCustomError(
       game.write.startGame([roomId, nextDeckCommitment], { account: host.account }),
@@ -434,3 +390,4 @@ describe("Web3BullshitGame", async function () {
     assert.equal(await game.read.deposits([player4.account.address]), stake + amountPerOpponent);
   });
 });
+

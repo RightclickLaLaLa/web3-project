@@ -21,7 +21,6 @@ const abi = [
   "function deposit() payable",
   "function deposits(address player) view returns (uint256)",
   "function joinRoom(bytes32 roomId)",
-  "function setReady(bytes32 roomId,bool ready)",
   "function voteRematch(bytes32 roomId,bool approve)",
   "function removeLobbyPlayer(bytes32 roomId,address player)",
   "function closeExpiredRematch(bytes32 roomId)",
@@ -29,6 +28,8 @@ const abi = [
   "function settleFinalPenalties(bytes32 roomId,address winner,address[] losers,uint256[] amounts)",
   "event AutoFinalSettlementTriggered(bytes32 indexed roomId,address indexed winner,address indexed submitter,address[] losers,uint256[] amounts,uint256 totalWon)"
 ];
+
+const readyRooms = new Map();
 
 function sendJson(res, status, payload) {
   res.writeHead(status, {
@@ -58,6 +59,73 @@ function readBody(req) {
 function assertAddress(address, label) {
   if (!ethers.isAddress(address)) throw new Error(`${label} is not a valid address`);
   return ethers.getAddress(address);
+}
+
+function roomReadyMap(roomId) {
+  const key = roomId.toLowerCase();
+  if (!readyRooms.has(key)) readyRooms.set(key, new Map());
+  return readyRooms.get(key);
+}
+
+function setReadyState(roomId, player, ready) {
+  const readyMap = roomReadyMap(roomId);
+  const address = ethers.getAddress(player);
+  if (ready) {
+    readyMap.set(address.toLowerCase(), true);
+  } else {
+    readyMap.delete(address.toLowerCase());
+  }
+}
+
+function clearReadyState(roomId) {
+  readyRooms.delete(roomId.toLowerCase());
+}
+
+function removeReadyState(roomId, player) {
+  roomReadyMap(roomId).delete(ethers.getAddress(player).toLowerCase());
+}
+
+async function getReadyStatus(payload) {
+  if (!payload?.roomId || !ethers.isHexString(payload.roomId, 32)) throw new Error("roomId must be bytes32");
+  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  const readContract = new ethers.Contract(CONTRACT_ADDRESS, abi, provider);
+  let room;
+  try {
+    room = await readContract.getRoom(payload.roomId);
+  } catch (_err) {
+    return {
+      roomId: payload.roomId,
+      status: 0,
+      players: [],
+      ready: {}
+    };
+  }
+  const readyMap = roomReadyMap(payload.roomId);
+  const players = Array.from(room.players).map((address) => ethers.getAddress(address));
+  const ready = Object.fromEntries(players.map((player) => [player, Boolean(readyMap.get(player.toLowerCase()))]));
+  return {
+    roomId: payload.roomId,
+    status: Number(room.status),
+    players,
+    ready
+  };
+}
+
+async function setPlayerReady(payload) {
+  if (!payload?.roomId || !ethers.isHexString(payload.roomId, 32)) throw new Error("roomId must be bytes32");
+  const player = assertAddress(payload.player, "player");
+  const ready = Boolean(payload.ready);
+  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  const readContract = new ethers.Contract(CONTRACT_ADDRESS, abi, provider);
+  const room = await readContract.getRoom(payload.roomId);
+  if (![1, 3].includes(Number(room.status))) throw new Error("Room is not readyable");
+  const players = Array.from(room.players).map((address) => ethers.getAddress(address));
+  const isPlayerInRoom = players.some((candidate) => candidate.toLowerCase() === player.toLowerCase());
+  if (ready && !isPlayerInRoom) {
+    throw new Error("Player is not in this room");
+  }
+  setReadyState(payload.roomId, player, ready);
+  return getReadyStatus(payload);
 }
 
 function validatePayload(payload) {
@@ -137,9 +205,7 @@ async function depositAndJoinBot(payload) {
     txs.push({ type: "join", hash: joinTx.hash, blockNumber: joinReceipt.blockNumber });
   }
 
-  const readyTx = await contract.setReady(payload.roomId, true, { nonce: nonce++ });
-  const readyReceipt = await readyTx.wait();
-  txs.push({ type: "ready", hash: readyTx.hash, blockNumber: readyReceipt.blockNumber });
+  setReadyState(payload.roomId, bot.address, true);
 
   const finalDeposit = await readContract.deposits(bot.address);
   const finalRoom = await readContract.getRoom(payload.roomId);
@@ -175,6 +241,7 @@ async function removeBotFromRoom(payload) {
   const nonce = await provider.getTransactionCount(wallet.address, "pending");
   const tx = await contract.removeLobbyPlayer(payload.roomId, removableBot, { nonce });
   const receipt = await tx.wait();
+  removeReadyState(payload.roomId, removableBot);
   const finalRoom = await readContract.getRoom(payload.roomId);
   return {
     bot: removableBot,
@@ -196,18 +263,16 @@ async function readyBotsInRoom(payload) {
   const bots = botWallets(provider).filter((wallet) => players.has(wallet.address.toLowerCase()));
   const txs = [];
   for (const bot of bots) {
-    const contract = new ethers.Contract(CONTRACT_ADDRESS, abi, bot);
-    let nonce = await provider.getTransactionCount(bot.address, "pending");
     if (Number(room.status) === 3) {
-      const voteTx = await contract.voteRematch(payload.roomId, true, { nonce: nonce++ });
+      const contract = new ethers.Contract(CONTRACT_ADDRESS, abi, bot);
+      const nonce = await provider.getTransactionCount(bot.address, "pending");
+      const voteTx = await contract.voteRematch(payload.roomId, true, { nonce });
       const voteReceipt = await voteTx.wait();
       txs.push({ bot: bot.address, type: "rematch-vote", hash: voteTx.hash, blockNumber: voteReceipt.blockNumber });
     }
-    const tx = await contract.setReady(payload.roomId, true, { nonce: nonce++ });
-    const receipt = await tx.wait();
-    txs.push({ bot: bot.address, type: "ready", hash: tx.hash, blockNumber: receipt.blockNumber });
+    setReadyState(payload.roomId, bot.address, true);
   }
-  return { readyBots: bots.map((bot) => bot.address), txs };
+  return { readyBots: bots.map((bot) => bot.address), readyStatus: await getReadyStatus(payload), txs };
 }
 
 async function closeExpiredRematch(payload) {
@@ -228,7 +293,10 @@ async function closeExpiredRematch(payload) {
 
 const server = http.createServer(async (req, res) => {
   try {
-    const url = req.url?.startsWith("/relayer/") ? req.url.slice("/relayer".length) : req.url;
+    const requestUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    const url = requestUrl.pathname.startsWith("/relayer/")
+      ? requestUrl.pathname.slice("/relayer".length)
+      : requestUrl.pathname;
     if (req.method === "OPTIONS") return sendJson(res, 204, {});
     if (req.method === "GET" && url === "/health") {
       const provider = new ethers.JsonRpcProvider(RPC_URL);
@@ -264,6 +332,23 @@ const server = http.createServer(async (req, res) => {
       const payload = JSON.parse(body || "{}");
       const result = await readyBotsInRoom(payload);
       return sendJson(res, 200, { ok: true, result });
+    }
+    if (req.method === "GET" && url === "/rooms/ready-status") {
+      const result = await getReadyStatus({ roomId: requestUrl.searchParams.get("roomId") });
+      return sendJson(res, 200, { ok: true, result });
+    }
+    if (req.method === "POST" && url === "/rooms/ready") {
+      const body = await readBody(req);
+      const payload = JSON.parse(body || "{}");
+      const result = await setPlayerReady(payload);
+      return sendJson(res, 200, { ok: true, result });
+    }
+    if (req.method === "POST" && url === "/rooms/ready-clear") {
+      const body = await readBody(req);
+      const payload = JSON.parse(body || "{}");
+      if (!payload?.roomId || !ethers.isHexString(payload.roomId, 32)) throw new Error("roomId must be bytes32");
+      clearReadyState(payload.roomId);
+      return sendJson(res, 200, { ok: true, result: { roomId: payload.roomId } });
     }
     if (req.method === "POST" && url === "/rooms/close-expired-rematch") {
       const body = await readBody(req);

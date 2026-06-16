@@ -3,14 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Web3 吹牛遊戲 Demo</title>
-    <link rel="stylesheet" href="./styles.css?v=20260616-room-event-sync" />
+    <title>Web3 吹牛遊戲</title>
+    <link rel="stylesheet" href="./styles.css?v=20260616-offchain-ready" />
   </head>
   <body>
     <main class="app">
       <header class="topbar">
         <div>
-          <p class="eyebrow">Blockchain Final Project</p>
+          <p class="eyebrow">Bullshit Card Table</p>
           <h1>Web3 吹牛遊戲</h1>
         </div>
         <button id="connectWallet">連接錢包</button>
@@ -23,8 +23,8 @@
         </div>
         <div>
           <span>合約地址</span>
-          <strong id="contractAddressLabel">0x4826533b4897376654bb4d4ad88b7fafd0c98528</strong>
-          <input id="contractAddress" type="hidden" value="0x4826533b4897376654bb4d4ad88b7fafd0c98528" />
+          <strong id="contractAddressLabel">0x1291be112d480055dafd8a610b7d1e203891c274</strong>
+          <input id="contractAddress" type="hidden" value="0x1291be112d480055dafd8a610b7d1e203891c274" />
         </div>
         <div>
           <span>押金餘額</span>
@@ -55,8 +55,8 @@
 
       <section class="section-shell app-view" id="lobbySection">
         <div class="section-title">
-          <p class="eyebrow">Room Lobby</p>
-          <h2>先加入房間，滿 4 人後再開始遊戲</h2>
+          <p class="eyebrow">Lobby</p>
+          <h2>開房、邀人、準備上桌</h2>
         </div>
 
         <div class="lobby-status">
@@ -77,11 +77,11 @@
             <div id="roomPlayers" class="player-list">尚無資料</div>
           </div>
           <div class="full">
-            <span>開始遊戲檢查</span>
+            <span>開局狀態</span>
             <strong id="startReason">請先查詢或建立房間。</strong>
           </div>
           <div class="full">
-            <span>加入房間檢查</span>
+            <span>加入狀態</span>
             <strong id="joinReason">請先連接錢包並查詢房間。</strong>
           </div>
         </div>
@@ -109,7 +109,7 @@
               <input id="roomText" />
               <button id="newRoomButton" type="button" class="secondary">新房號</button>
             </div>
-            <small id="roomHint">若房間已存在，請改按「加入房間」或產生新房號。</small>
+            <small id="roomHint">用房號找桌；找不到就開一桌新的。</small>
             <label>每位玩家最低押金 ETH</label>
             <input id="stakeRequired" value="100" />
             <div class="button-row">
@@ -122,7 +122,7 @@
               <button id="leaveRoomButton" type="button" class="secondary">退出房間</button>
               <button id="disbandRoomButton" type="button" class="danger">解散房間</button>
             </div>
-            <label>牌組承諾 Hash</label>
+            <label>洗牌承諾</label>
             <input id="deckCommitment" placeholder="留空會自動產生" />
             <div class="button-row">
               <button id="startGameButton">開始遊戲</button>
@@ -130,7 +130,7 @@
             </div>
             <select id="removePlayerSelect" aria-label="選擇要移除的玩家"></select>
             <button id="removeBotButton" type="button" class="secondary">移除玩家</button>
-            <button id="clearHostedRoomButton" type="button" class="secondary">解除舊房間鎖</button>
+            <button id="clearHostedRoomButton" type="button" class="secondary">清除本機房間狀態</button>
           </article>
         </div>
       </section>
@@ -138,7 +138,7 @@
       <section class="game-table app-view is-hidden" id="gameSection">
         <div class="table-header">
           <div>
-            <p class="eyebrow">Game Table</p>
+            <p class="eyebrow">Table</p>
             <h2>吹牛牌桌</h2>
           </div>
           <div class="round-state">
@@ -147,31 +147,56 @@
           </div>
         </div>
 
-        <button id="openRulesButton" type="button" class="secondary compact-button">規則</button>
+        <button id="openRulesButton" type="button" class="secondary compact-button">查看規則</button>
 
         <div class="modal-backdrop is-hidden" id="rulesModal">
           <div class="modal rules-modal">
             <button id="closeRulesButton" type="button" class="modal-close" aria-label="關閉規則">×</button>
-            <h2>規則</h2>
-            <div class="rule-strip" id="ruleStrip">
-          <div>
-            <strong>鬼牌規則</strong>
-            <span>牌組加入 2 張鬼牌，鬼牌可視為任意點數。</span>
-          </div>
-          <div>
-            <strong>出牌限制</strong>
-            <span>每次出 1 至 3 張。同一輪需喊同點數；所有其他玩家 Pass 後，由最後出牌者喊新點數。</span>
-          </div>
-          <div>
-            <strong>隨機發牌</strong>
-            <span id="dealStatus">54 張牌全數發給玩家；湊滿 4 張同點數才放入棄牌堆。</span>
-          </div>
-          <div>
-            <strong>牌組承諾</strong>
-            <span id="tableDeckCommitment">尚未發牌</span>
-          </div>
-        </div>
-
+            <h2>吹牛規則</h2>
+            <div class="rules-content">
+              <section>
+                <h3>目標</h3>
+                <p>最先打完手牌的人獲勝。遊戲結束後，其他玩家依剩餘手牌張數支付押金給贏家。</p>
+              </section>
+              <section>
+                <h3>牌組與鬼牌</h3>
+                <p>使用 54 張牌，包含 2 張鬼牌。畫面只顯示點數，不顯示花色。鬼牌可當作任何點數，因此喊牌檢查時會被視為符合宣稱。</p>
+              </section>
+              <section>
+                <h3>出牌與喊牌</h3>
+                <p>輪到你時，選 1 至 3 張手牌，蓋牌放入出牌堆，並宣稱這些牌是某個點數。出牌可以說謊，但宣稱的張數必須等於實際打出的張數。</p>
+              </section>
+              <section>
+                <h3>同一輪</h3>
+                <p>有人喊出點數後，後續玩家只能跟著喊同一點數，但張數可以不同，也可以 Pass。下家至少會等一段時間，讓其他玩家有機會抓吹牛。</p>
+              </section>
+              <section>
+                <h3>Pass 與新一輪</h3>
+                <p>如果除了最後出牌者以外的玩家都 Pass，則由最後出牌者開始新一輪，這時可以重新選擇要喊的點數。出牌堆不會因為全員 Pass 自動進棄牌堆。</p>
+              </section>
+              <section>
+                <h3>抓吹牛</h3>
+                <p>只要上一手還沒被新的出牌覆蓋，其他玩家可以抓吹牛。抓牌時會翻開上一手實際打出的牌。</p>
+                <p>若上一手宣稱不成立，出牌者拿走整個出牌堆，並由抓成功的人開始新一輪。若宣稱成立，抓錯的人拿走整個出牌堆，並由被抓的人開始新一輪。</p>
+              </section>
+              <section>
+                <h3>棄牌堆</h3>
+                <p>只有玩家湊滿 4 張同點數時，才可以整理進棄牌堆。已進棄牌堆的牌不再參與後續喊牌與抓牌判定。</p>
+              </section>
+              <section>
+                <h3>最後一手</h3>
+                <p>有人打完手牌後，其他玩家仍可抓最後一手。若最後一手通過，遊戲結束並自動結算；若被抓成功，出牌者要拿回出牌堆，遊戲繼續。</p>
+              </section>
+              <section>
+                <h3>押金</h3>
+                <p>押金存在合約中。對局中的出牌、Pass、抓牌判斷主要在前端進行；遊戲結束、認輸、提款等資金結果會透過合約紀錄。</p>
+              </section>
+              <section>
+                <h3>本桌狀態</h3>
+                <p id="dealStatus">尚未發牌。</p>
+                <p id="tableDeckCommitment">尚未產生洗牌承諾。</p>
+              </section>
+            </div>
           </div>
         </div>
 
@@ -277,7 +302,7 @@
 
       <section class="section-shell app-view is-hidden" id="settlementSection">
         <div class="section-title">
-          <p class="eyebrow">Final Settlement</p>
+          <p class="eyebrow">Wallet</p>
           <h2>押金餘額與領出</h2>
         </div>
 
@@ -312,6 +337,6 @@
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
-    <script src="./app.js?v=20260616-room-event-sync"></script>
+    <script src="./app.js?v=20260616-offchain-ready"></script>
   </body>
 </html>
