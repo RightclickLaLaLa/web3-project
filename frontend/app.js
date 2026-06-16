@@ -1,5 +1,5 @@
 ﻿const CONTRACT_ADDRESS = "0x1291be112d480055dafd8a610b7d1e203891c274";
-const APP_VERSION = "20260616-offchain-ready";
+const APP_VERSION = "20260617-wallet-funds-compact";
 const LOCAL_RPC_URL = "http://127.0.0.1:8545";
 const PUBLIC_RPC_HOST = "rightclickhohoho.dpdns.org";
 const MAX_CLAIM_COUNT = 6;
@@ -344,7 +344,8 @@ function explainError(err) {
 
 function syncContractAddress() {
   $("contractAddress").value = CONTRACT_ADDRESS;
-  $("contractAddressLabel").textContent = CONTRACT_ADDRESS;
+  const visibleLabel = document.getElementById("contractAddressLabel");
+  if (visibleLabel) visibleLabel.textContent = CONTRACT_ADDRESS;
 }
 
 function roomId() {
@@ -364,13 +365,9 @@ function showView(viewId) {
   for (const section of document.querySelectorAll(".app-view")) {
     section.classList.toggle("is-hidden", section.id !== viewId);
   }
-  const buttonMap = { lobbySection: "showLobbyButton", gameSection: "showGameButton", settlementSection: "showSettlementButton" };
+  const buttonMap = { lobbySection: "showLobbyButton", gameSection: "showGameButton" };
   for (const button of document.querySelectorAll(".tab-button")) button.classList.remove("active");
-  $(buttonMap[viewId]).classList.add("active");
-  if (viewId === "settlementSection") {
-    fillLatestFinalSettlementPayload(true);
-    void refreshBalance();
-  }
+  if (buttonMap[viewId]) $(buttonMap[viewId]).classList.add("active");
 }
 
 function renderHand() {
@@ -438,6 +435,13 @@ async function sha256Hex(text) {
   return `0x${[...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
+function startingIndexFromCommitment(commitment, playerCount = tablePlayers.length) {
+  if (!playerCount) return 0;
+  const hex = String(commitment || "").replace(/^0x/i, "");
+  if (!/^[0-9a-f]+$/i.test(hex) || hex.length < 8) return secureRandomInt(playerCount);
+  return Number.parseInt(hex.slice(-8), 16) % playerCount;
+}
+
 async function dealRandomEncryptedHands() {
   if (tablePlayers.length !== 4) {
     log(`發牌失敗：需要 4 位玩家，目前只有 ${tablePlayers.length} 位。`);
@@ -456,19 +460,21 @@ async function dealRandomEncryptedHands() {
 
   const salt = crypto.getRandomValues(new Uint32Array(4)).join("-");
   const commitment = await sha256Hex(JSON.stringify({ room: $("roomText").value, salt, deck }));
+  const startingPlayerIndex = startingIndexFromCommitment(commitment, tablePlayers.length);
   $("deckCommitment").value = commitment;
   $("tableDeckCommitment").textContent = `${commitment.slice(0, 10)}...${commitment.slice(-8)}`;
   $("dealStatus").textContent = "已用 WebCrypto 產生隨機洗牌，並依玩家順序發牌。";
   localStorage.setItem(
     `deal:${roomId()}`,
-    JSON.stringify({ commitment, salt, players: tablePlayers, hands: Object.fromEntries(playerHands) })
+    JSON.stringify({ commitment, salt, startingPlayerIndex, players: tablePlayers, hands: Object.fromEntries(playerHands) })
   );
+  currentTurnIndex = startingPlayerIndex;
 
   checkAllPlayersFourOfAKind();
   renderHand();
   renderSeats();
   renderTurn();
-  log(`已隨機洗牌並發牌，牌組承諾：${commitment}`);
+  log(`已隨機洗牌並發牌，起始玩家：${playerLabel(tablePlayers[startingPlayerIndex])}，牌組承諾：${commitment}`);
   return true;
 }
 
@@ -499,7 +505,7 @@ function ensureTablePlayers(players = tablePlayers, useAccountFallback = true) {
   renderTurn();
 }
 
-function resetTurnState(players = tablePlayers, clearHands = false) {
+function resetTurnState(players = tablePlayers, clearHands = false, startingIndex = 0) {
   clearBotTimer();
   clearBotTurnInFlight();
   clearBotChallengeTimers();
@@ -515,7 +521,7 @@ function resetTurnState(players = tablePlayers, clearHands = false) {
   actionStamp += 1;
   if (clearHands) playerHands.clear();
   tablePlayers = Array.from(players || []).slice(0, 4);
-  currentTurnIndex = 0;
+  currentTurnIndex = tablePlayers.length ? Math.max(0, Math.min(Number(startingIndex) || 0, tablePlayers.length - 1)) : 0;
   lastActor = null;
   lastClaim = null;
   playPile = [];
@@ -558,6 +564,13 @@ function showPostGameActions() {
   }
   if ($("postGameActions")) $("postGameActions").classList.remove("is-hidden");
   updateControls();
+}
+
+function showSettlementRetryButton() {
+  if (!$("settleFinalButton")) return;
+  $("settleFinalButton").classList.remove("is-hidden");
+  $("settleFinalButton").disabled = false;
+  $("settleFinalButton").textContent = "重送結算";
 }
 
 function cardRank(card) {
@@ -783,7 +796,8 @@ async function autoSettleFinalPenalties() {
     await settleFinalSettlementBundle(payload);
   } catch (err) {
     const message = explainError(err);
-    $("settlementSuggestion").textContent = `自動鏈上結算失敗：${message}。可到提款頁重送。`;
+    $("settlementSuggestion").textContent = `自動鏈上結算失敗：${message}。系統已保留本局結算資料。`;
+    showSettlementRetryButton();
     log(`自動鏈上結算失敗：${message}`);
   } finally {
     finalSettlementInProgress = false;
@@ -1544,7 +1558,7 @@ function handleRoomSync(room) {
     gameLocked = true;
     ensureTablePlayers(players, false);
     restoreDealForRoom();
-    resetTurnState(players);
+    resetTurnState(players, false, startingIndexFromCommitment(room.deckCommitment, players.length));
     openTable("遊戲進行中");
     log("房主已開始遊戲，已自動進入牌桌。");
     return;
@@ -1639,7 +1653,7 @@ async function cancelHostedLobbyRoomBeforeNewRoom({ includeCurrent = false } = {
 }
 
 async function refreshBalance() {
-  const address = account || $("balanceLookupAddress").value.trim() || localStorage.getItem("lastWalletAddress");
+  const address = account || localStorage.getItem("lastWalletAddress");
   if (!address || !ethers.isAddress(address)) {
     $("depositBalance").textContent = "連接後讀取";
     return;
@@ -1652,7 +1666,6 @@ async function refreshBalance() {
   if ($("settlementWithdrawAmount") && (!$("settlementWithdrawAmount").value || $("settlementWithdrawAmount").value === "100")) {
     $("settlementWithdrawAmount").value = ethers.formatEther(balance);
   }
-  $("balanceLookupAddress").value = address;
   if (!account) $("walletAddress").textContent = `${address}（上次連接）`;
 }
 
@@ -1661,7 +1674,6 @@ async function refreshBalanceSoon(attempts = 3, delayMs = 700) {
     if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
     try {
       await refreshBalance();
-      if ($("balanceLookupHint")) $("balanceLookupHint").textContent = "已自動重新讀取押金餘額。";
       return true;
     } catch (err) {
       if (attempt === attempts - 1) {
@@ -1679,7 +1691,6 @@ async function restoreWalletSession() {
   if (!window.ethereum) {
     if (lastAddress && ethers.isAddress(lastAddress)) {
       $("walletAddress").textContent = `${lastAddress}（上次連接）`;
-      $("balanceLookupAddress").value = lastAddress;
       await refreshBalance();
     } else {
       $("depositBalance").textContent = "請安裝 MetaMask";
@@ -1691,7 +1702,6 @@ async function restoreWalletSession() {
   if (!accounts.length) {
     if (lastAddress && ethers.isAddress(lastAddress)) {
       $("walletAddress").textContent = `${lastAddress}（上次連接）`;
-      $("balanceLookupAddress").value = lastAddress;
       await refreshBalance();
       log(`已用上次錢包地址讀取押金：${lastAddress}`);
     } else {
@@ -1706,7 +1716,6 @@ async function restoreWalletSession() {
   contract = new ethers.Contract(CONTRACT_ADDRESS, abi, signer);
   localStorage.setItem("lastWalletAddress", account);
   $("walletAddress").textContent = account;
-  $("balanceLookupAddress").value = account;
   if ($("seatYou")) $("seatYou").textContent = short(account);
   updateNicknameInput();
   setupWalletEvents();
@@ -1753,7 +1762,6 @@ async function connectWallet() {
     account = await signer.getAddress();
     localStorage.setItem("lastWalletAddress", account);
     $("walletAddress").textContent = account;
-    $("balanceLookupAddress").value = account;
     if ($("seatYou")) $("seatYou").textContent = short(account);
     log(`錢包已連接：${account}`);
     updateNicknameInput();
@@ -1849,11 +1857,6 @@ wire("connectWallet", async () => {
 wire("depositButton", async () => {
   const game = await getContract();
   await wait(await game.deposit(await txOverrides({ value: ethers.parseEther($("depositAmount").value) })), "存入押金");
-});
-
-wire("withdrawButton", async () => {
-  const game = await getContract();
-  await wait(await game.withdraw(ethers.parseEther($("withdrawAmount").value), await txOverrides()), "提領押金");
 });
 
 wire("refreshSettlementBalanceButton", refreshBalance);
@@ -2000,7 +2003,7 @@ async function startGameConfirmed() {
   updateRoomPanel(startedRoom);
   botMode = startedPlayers.some(isBot);
   gameLocked = true;
-  resetTurnState(startedPlayers);
+  resetTurnState(startedPlayers, false, startingIndexFromCommitment(commitment, startedPlayers.length));
   openTable("遊戲進行中");
 }
 
@@ -2139,7 +2142,6 @@ wire("finishGameButton", async () => {
 
 $("showLobbyButton").onclick = () => showView("lobbySection");
 $("showGameButton").onclick = () => showView("gameSection");
-$("showSettlementButton").onclick = () => showView("settlementSection");
 $("openTableButton").onclick = () => openTable();
 wire("rematchButton", startRematchRound);
 wire("endGameButton", () => endCurrentGameView("遊戲已結束。"));
@@ -2331,16 +2333,16 @@ $("removeBotButton").onclick = async () => {
 };
 $("lookupBalanceButton").onclick = async () => {
   try {
-    const address = $("balanceLookupAddress").value.trim();
+    const address = account || localStorage.getItem("lastWalletAddress");
     if (!ethers.isAddress(address)) {
-      $("balanceLookupHint").textContent = "請輸入有效錢包地址。";
+      log("請先連接錢包後再讀取押金。");
       return;
     }
     localStorage.setItem("lastWalletAddress", address);
     await refreshBalance();
-    $("balanceLookupHint").textContent = `已從合約讀取 ${short(address)} 的押金。`;
+    log(`已讀取 ${short(address)} 的押金。`);
   } catch (err) {
-    $("balanceLookupHint").textContent = `讀取失敗：${explainError(err)}`;
+    log(`讀取押金失敗：${explainError(err)}`);
   }
 };
 $("newRoomButton").onclick = async () => {

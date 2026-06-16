@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Web3 吹牛遊戲</title>
-    <link rel="stylesheet" href="./styles.css?v=20260616-offchain-ready" />
+    <link rel="stylesheet" href="./styles.css?v=20260617-wallet-funds-compact" />
   </head>
   <body>
     <main class="app">
@@ -16,41 +16,54 @@
         <button id="connectWallet">連接錢包</button>
       </header>
 
-      <section class="status-panel">
-        <div>
-          <span>錢包</span>
-          <strong id="walletAddress">尚未連接</strong>
-        </div>
-        <div>
-          <span>合約地址</span>
-          <strong id="contractAddressLabel">0x1291be112d480055dafd8a610b7d1e203891c274</strong>
+      <section class="status-panel wallet-panel">
+        <div class="status-card wallet-summary-card">
           <input id="contractAddress" type="hidden" value="0x1291be112d480055dafd8a610b7d1e203891c274" />
+          <div>
+            <span>錢包</span>
+            <strong id="walletAddress">尚未連接</strong>
+          </div>
+          <div>
+            <span>押金餘額</span>
+            <strong id="depositBalance">-</strong>
+          </div>
+          <button id="lookupBalanceButton" type="button" class="secondary compact-button">重新讀取</button>
         </div>
-        <div>
-          <span>押金餘額</span>
-          <strong id="depositBalance">-</strong>
-        </div>
-      </section>
-
-      <section class="status-panel compact">
-        <div>
-          <span>查詢押金地址</span>
-          <input id="balanceLookupAddress" placeholder="貼上玩家錢包地址，或連接錢包後自動帶入" />
-        </div>
-        <div>
-          <span>鏈上押金查詢</span>
-          <button id="lookupBalanceButton" type="button">讀取押金</button>
-        </div>
-        <div>
-          <span>提示</span>
-          <strong id="balanceLookupHint">押金存在合約 deposits 裡，重新整理後可重新讀取。</strong>
+        <div class="status-card funding-card">
+          <div class="funding-head">
+            <span>資金管理</span>
+            <strong>押金與領出</strong>
+          </div>
+          <input id="settlementBalance" type="hidden" readonly />
+          <div class="funding-grid">
+            <label>
+              暱稱
+              <div class="input-action">
+                <input id="nicknameInput" maxlength="16" placeholder="輸入對局暱稱" />
+                <button id="saveNicknameButton" type="button" class="secondary">儲存</button>
+              </div>
+            </label>
+            <label>
+              押金 ETH
+              <div class="input-action">
+                <input id="depositAmount" value="0.5" />
+                <button id="depositButton">存入押金</button>
+              </div>
+            </label>
+            <label>
+              提領 ETH
+              <div class="input-action">
+                <input id="settlementWithdrawAmount" value="100" />
+                <button id="settlementWithdrawButton" type="button" class="secondary">領出</button>
+              </div>
+            </label>
+          </div>
         </div>
       </section>
 
       <nav class="flow-tabs" aria-label="遊戲流程">
         <button id="showLobbyButton" type="button" class="tab-button active">大廳</button>
         <button id="showGameButton" type="button" class="tab-button">遊戲</button>
-        <button id="showSettlementButton" type="button" class="tab-button">提款</button>
       </nav>
 
       <section class="section-shell app-view" id="lobbySection">
@@ -86,51 +99,44 @@
           </div>
         </div>
 
-        <div class="grid">
-          <article class="panel">
-            <h3>資金質押</h3>
-            <label>暱稱</label>
-            <div class="input-action">
-              <input id="nicknameInput" maxlength="16" placeholder="輸入對局暱稱" />
-              <button id="saveNicknameButton" type="button" class="secondary">儲存</button>
-            </div>
-            <label>押金 ETH</label>
-            <input id="depositAmount" value="0.5" />
-            <button id="depositButton">存入押金</button>
-            <label>提款 ETH</label>
-            <input id="withdrawAmount" value="0.1" />
-            <button id="withdrawButton">提領押金</button>
-          </article>
-
-          <article class="panel">
+        <div class="grid lobby-controls">
+          <article class="panel room-control-panel">
             <h3>房間操作</h3>
-            <label>Room ID</label>
-            <div class="input-action">
-              <input id="roomText" />
-              <button id="newRoomButton" type="button" class="secondary">新房號</button>
+            <div class="room-control-grid">
+              <label class="room-id-field">
+                Room ID
+                <div class="input-action">
+                  <input id="roomText" />
+                  <button id="newRoomButton" type="button" class="secondary">新房號</button>
+                </div>
+              </label>
+              <label>
+                最低押金 ETH
+                <input id="stakeRequired" value="100" />
+              </label>
+              <label>
+                洗牌承諾
+                <input id="deckCommitment" placeholder="留空會自動產生" />
+              </label>
             </div>
             <small id="roomHint">用房號找桌；找不到就開一桌新的。</small>
-            <label>每位玩家最低押金 ETH</label>
-            <input id="stakeRequired" value="100" />
-            <div class="button-row">
+            <div class="room-action-grid primary-actions">
               <button id="createRoomButton">建立房間</button>
               <button id="joinRoomButton" class="secondary">加入房間</button>
+              <button id="refreshRoomButton" type="button" class="secondary">更新房間狀態</button>
+              <button id="readyButton" type="button" class="secondary">準備</button>
             </div>
-            <button id="refreshRoomButton" type="button" class="secondary">更新房間狀態</button>
-            <button id="readyButton" type="button" class="secondary">準備</button>
-            <div class="button-row">
-              <button id="leaveRoomButton" type="button" class="secondary">退出房間</button>
-              <button id="disbandRoomButton" type="button" class="danger">解散房間</button>
-            </div>
-            <label>洗牌承諾</label>
-            <input id="deckCommitment" placeholder="留空會自動產生" />
-            <div class="button-row">
+            <div class="room-action-grid table-actions">
               <button id="startGameButton">開始遊戲</button>
               <button id="addBotsButton" type="button" class="secondary">加入電腦玩家</button>
+              <select id="removePlayerSelect" aria-label="選擇要移除的玩家"></select>
+              <button id="removeBotButton" type="button" class="secondary">移除玩家</button>
             </div>
-            <select id="removePlayerSelect" aria-label="選擇要移除的玩家"></select>
-            <button id="removeBotButton" type="button" class="secondary">移除玩家</button>
-            <button id="clearHostedRoomButton" type="button" class="secondary">清除本機房間狀態</button>
+            <div class="room-action-grid danger-actions">
+              <button id="leaveRoomButton" type="button" class="secondary">退出房間</button>
+              <button id="disbandRoomButton" type="button" class="danger">解散房間</button>
+              <button id="clearHostedRoomButton" type="button" class="secondary">清除本機房間狀態</button>
+            </div>
           </article>
         </div>
       </section>
@@ -227,25 +233,25 @@
           </div>
           <div class="cards" id="handCards"></div>
           <div class="action-cluster">
-          <section class="table-feed" aria-label="本局紀錄">
-            <div class="feed-title">
-              <strong>本局紀錄</strong>
+            <section class="table-feed" aria-label="本局紀錄">
+              <div class="feed-title">
+                <strong>本局紀錄</strong>
+              </div>
+              <div id="tableEventFeed"></div>
+            </section>
+            <div class="action-panel">
+              <label id="selectedCountLabel">已選 0 張</label>
+              <label>喊牌點數</label>
+              <select id="claimRank">
+                <option>A</option><option>2</option><option>3</option><option>4</option>
+                <option>5</option><option>6</option><option>7</option><option>8</option>
+                <option>9</option><option>10</option><option>J</option><option>Q</option><option>K</option>
+              </select>
+              <button id="playClaimButton" type="button">出牌 / 喊牌</button>
+              <button id="passButton" type="button" class="secondary">Pass</button>
+              <button id="challengeButton" type="button" class="secondary">抓吹牛</button>
+              <button id="forfeitButton" type="button" class="danger">認輸退出</button>
             </div>
-            <div id="tableEventFeed"></div>
-          </section>
-          <div class="action-panel">
-            <label id="selectedCountLabel">已選 0 張</label>
-            <label>喊牌點數</label>
-            <select id="claimRank">
-              <option>A</option><option>2</option><option>3</option><option>4</option>
-              <option>5</option><option>6</option><option>7</option><option>8</option>
-              <option>9</option><option>10</option><option>J</option><option>Q</option><option>K</option>
-            </select>
-            <button id="playClaimButton" type="button">出牌 / 喊牌</button>
-            <button id="passButton" type="button" class="secondary">Pass</button>
-            <button id="challengeButton" type="button" class="secondary">抓吹牛</button>
-            <button id="forfeitButton" type="button" class="danger">認輸退出</button>
-          </div>
           </div>
         </div>
 
@@ -300,35 +306,14 @@
         </div>
       </div>
 
-      <section class="section-shell app-view is-hidden" id="settlementSection">
-        <div class="section-title">
-          <p class="eyebrow">Wallet</p>
-          <h2>押金餘額與領出</h2>
-        </div>
-
-        <div class="grid settlement-grid">
-          <article class="panel">
-            <h3>我的押金</h3>
-            <label>合約餘額</label>
-            <input id="settlementBalance" readonly placeholder="連接錢包後自動讀取" />
-            <label>提領金額 ETH</label>
-            <input id="settlementWithdrawAmount" value="100" />
-            <button id="settlementWithdrawButton">領出到錢包</button>
-            <button id="refreshSettlementBalanceButton" type="button" class="secondary">重新讀取餘額</button>
-          </article>
-
-          <article class="panel is-hidden" id="settlementStatusPanel">
-            <h3>本局自動結算狀態</h3>
-            <label>贏家</label>
-            <input id="settlementWinner" readonly placeholder="遊戲結束後自動代入" />
-            <label>扣款明細</label>
-            <textarea id="settlementPreview" readonly placeholder="遊戲結束後由系統自動結算"></textarea>
-            <button id="resendSettlementButton" type="button" class="secondary">重送自動結算</button>
-            <button id="finishGameButton" type="button" class="secondary">結束遊戲</button>
-            <textarea id="settleNoteInput" class="is-hidden" placeholder="internal settlement payload"></textarea>
-          </article>
-        </div>
-      </section>
+      <div class="is-hidden" aria-hidden="true">
+        <input id="settlementWinner" readonly />
+        <textarea id="settlementPreview" readonly></textarea>
+        <textarea id="settleNoteInput"></textarea>
+        <button id="resendSettlementButton" type="button">重送自動結算</button>
+        <button id="finishGameButton" type="button">結束遊戲</button>
+        <button id="refreshSettlementBalanceButton" type="button">重新讀取餘額</button>
+      </div>
 
       <section class="events">
         <h2>事件與交易紀錄</h2>
@@ -337,6 +322,6 @@
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
-    <script src="./app.js?v=20260616-offchain-ready"></script>
+    <script src="./app.js?v=20260617-wallet-funds-compact"></script>
   </body>
 </html>

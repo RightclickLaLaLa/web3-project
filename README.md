@@ -1,57 +1,58 @@
-# Web3 Bullshit Game
+# Web3 吹牛遊戲
 
-Web3 Bullshit Game is a blockchain final-project DApp that combines a Solidity deposit-pool contract, a browser game UI, a backend relayer, and optional AI computer players.
+這是一個區塊鏈期末專案用的 Web3 吹牛遊戲 DApp。系統結合 Solidity 押金池合約、瀏覽器遊戲介面、後端 relayer，以及可選的 AI 電腦玩家。
 
-The game uses the classic Bullshit / Cheat card-game flow with 54 cards, including jokers. Players deposit test ETH into the smart contract before entering a room. Gameplay actions such as playing cards, passing, challenging, and AI decisions are handled off-chain for speed, while deposits, room lifecycle, game start, rematch votes, forfeits, and final settlement are recorded on-chain.
+遊戲採用 54 張牌的吹牛 / Bullshit / Cheat 規則，包含 2 張鬼牌。玩家進房前先把測試 ETH 存入智慧合約作為押金；出牌、Pass、抓吹牛與 AI 決策等高頻操作主要在鏈下處理；押金、房間生命週期、遊戲開始、再開投票、認輸與最終結算則由合約記錄與執行。
 
-## Project Highlights
+## 專案重點
 
-- **Smart contract workflow**: deposit, withdraw, room creation, joining/leaving, player removal, game start, rematch voting, forfeit, challenge settlement, and final settlement.
-- **Deposit-pool settlement**: players only need to deposit before playing and withdraw after the game. Per-game penalties are settled from contract balances.
-- **Replay protection**: each room has a `roomEpoch`, and final settlement is guarded by `settledEpochs[roomId][epoch]`.
-- **Event-driven UI**: frontend listens to contract events and refreshes room, balance, and settlement state.
-- **Off-chain ready state**: ready/unready does not cost gas. It is synchronized through the relayer.
-- **AI computer players**: bots can join rooms with their own private keys and deposits. AI decisions can use Google Gemini/Gemma or an OpenAI-compatible LM Studio server, with local fallback rules.
-- **Deck commitment**: the frontend shuffles with WebCrypto randomness and submits a deck commitment hash when the host starts a game.
+- **智慧合約流程**：押金、提款、建立房間、加入房間、移除玩家、開始遊戲、再開投票、認輸、抓吹牛結算、最終結算。
+- **押金池結算**：玩家只需要先存入押金，遊戲結束後由合約調整押金餘額，最後再提款，減少每回合交易與 gas 成本。
+- **防重複結算**：每個房間使用 `roomEpoch` 區分不同局，並用 `settledEpochs[roomId][epoch]` 防止同一局被重複結算。
+- **事件驅動介面**：前端監聽合約 events，更新房間、押金、結算與交易紀錄。
+- **準備狀態不上鏈**：ready / unready 只透過 relayer 同步，不需要玩家為準備動作支付手續費。
+- **AI 電腦玩家**：電腦玩家有自己的錢包與押金，可加入房間並參與遊戲。AI 可使用 LM Studio 本地模型、Google AI Studio，或本地 fallback 規則。
+- **洗牌承諾**：前端使用 WebCrypto 隨機洗牌，開局時提交 deck commitment hash 到合約。
 
-## Tech Stack
+## 技術棧
 
 - Solidity `^0.8.28`
 - Hardhat 3 + `@nomicfoundation/hardhat-toolbox-viem`
-- HTML / CSS / JavaScript frontend
+- HTML / CSS / JavaScript
 - ethers.js + MetaMask
 - Node.js relayer
 - Node.js AI server
-- Google AI Studio or LM Studio compatible AI endpoint
+- LM Studio OpenAI-compatible API
+- Google AI Studio / Gemma API
 
-## Repository Layout
+## 專案結構
 
 ```text
-contracts/Web3BullshitGame.sol   Smart contract
-frontend/index.html              Browser UI
-frontend/app.js                  Frontend game and chain integration
-frontend/styles.css              UI styling
-server/relayer.js                Bot wallet actions, off-chain ready state, auto settlement
-server/ai-player.js              AI decision server
-scripts/deploy.ts                Local deployment script
-test/Web3BullshitGame.ts         Contract tests
+contracts/Web3BullshitGame.sol   智慧合約
+frontend/index.html              前端頁面
+frontend/app.js                  遊戲流程與鏈上互動
+frontend/styles.css              介面樣式
+server/relayer.js                電腦玩家錢包、off-chain ready、自動結算
+server/ai-player.js              AI 決策伺服器
+scripts/deploy.ts                本地部署腳本
+test/Web3BullshitGame.ts         合約測試
 ```
 
-## Setup
+## 安裝
 
-Install dependencies:
+安裝套件：
 
 ```powershell
 npm install
 ```
 
-Copy environment settings:
+建立環境設定檔：
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Fill `.env` with your local RPC, deployed contract address, relayer private key, and bot private keys:
+在 `.env` 填入 RPC、合約地址、relayer 私鑰與電腦玩家私鑰：
 
 ```text
 AI_PORT=8787
@@ -65,7 +66,7 @@ LMSTUDIO_BASE_URL=http://127.0.0.1:1234/v1
 LMSTUDIO_MODEL=qwen3.5-4b
 ```
 
-Google AI Studio can also be used:
+若要使用 Google AI Studio：
 
 ```text
 AI_PROVIDER=google
@@ -73,120 +74,124 @@ GOOGLE_API_KEY=...
 GEMMA_MODEL=gemma-3-27b-it
 ```
 
-## Local Development
+## 本地啟動流程
 
-Start a local Hardhat chain:
+啟動 Hardhat 私鏈：
 
 ```powershell
 npm run node
 ```
 
-Deploy the contract:
+部署合約：
 
 ```powershell
 npm run deploy:localhost
 ```
 
-Start the relayer:
+啟動 relayer：
 
 ```powershell
 npm run relayer
 ```
 
-Start the AI server:
+啟動 AI server：
 
 ```powershell
 npm run ai
 ```
 
-Serve the frontend from the `frontend` folder, then open `index.html` in a browser through your local web server or Cloudflare tunnel.
+最後用本地網頁伺服器或 Cloudflare Tunnel 開啟 `frontend/index.html`。
 
-## Public Demo Notes
+## 公開 Demo 路由
 
-When exposing the app through Cloudflare Tunnel, the frontend expects these service paths:
+若使用 Cloudflare Tunnel，前端預期可連到以下路徑：
 
-- `/rpc` -> Hardhat JSON-RPC server, usually local port `8545`
-- `/relayer` -> relayer server, usually local port `8790`
-- `/ai` -> AI server, usually local port `8787`
+- `/rpc`：Hardhat JSON-RPC，通常對應本機 `8545`
+- `/relayer`：relayer server，通常對應本機 `8790`
+- `/ai`：AI server，通常對應本機 `8787`
 
-External players only need access to the web frontend and the public RPC route used by MetaMask. AI requests are normally sent by the frontend/backend services; the AI model itself does not need to be exposed as a standalone public service unless your deployment architecture requires it.
+外部玩家需要能開啟前端，並在 MetaMask 中使用公開 RPC。AI 請求通常由前端或後端服務送出，AI 模型本身不一定要單獨公開。
 
-## Demo Flow
+## Demo 流程
 
-1. Connect MetaMask to the local or tunneled private chain.
-2. Deposit test ETH into the contract.
-3. Create a room or join an existing room.
-4. Add real players or AI computer players until there are 4 players.
-5. All players mark ready. Bots are ready by default.
-6. Host starts the game. The frontend shuffles the deck and submits a commitment hash.
-7. Players take turns playing, passing, or challenging.
-8. When a player finishes, final challenge/settlement flow runs.
-9. Relayer submits final settlement to the contract.
-10. Players withdraw remaining contract balances.
+1. 連接 MetaMask 到本地或 tunneled 私鏈。
+2. 玩家存入測試 ETH 作為押金。
+3. 建立房間或加入房間。
+4. 加入真人玩家或 AI 電腦玩家，直到房間滿 4 人。
+5. 所有玩家準備，電腦玩家預設準備。
+6. 房主開始遊戲，前端洗牌並提交 deck commitment。
+7. 玩家依序出牌、Pass 或抓吹牛。
+8. 有玩家打完手牌後，其他玩家仍可抓最後一手。
+9. 最終結果由 relayer 提交合約結算。
+10. 玩家從合約提領剩餘押金。
 
-## Smart Contract Checklist
+## 智慧合約對照
 
-The contract is designed to match the project grading requirements:
+合約符合課程要求的 Solidity 設計：
 
-- **State variables**: `owner`, `deposits`, `rooms`, `isPlayerInRoom`, `rematchVotes`, `roomEpoch`, `settledEpochs`, `roomIds`.
-- **Struct**: `Room`.
-- **Mapping and array usage**: deposits, room lookup, player membership, rematch votes, settlement replay guard, room list, room player list.
-- **Events**: `Deposit`, `Withdrawal`, `RoomCreated`, `PlayerJoined`, `PlayerRemoved`, `RematchVoted`, `RematchExpired`, `GameStarted`, `GameFinished`, `ChallengeSettled`, `FinalWinnerSettled`, `FinalPenaltiesSettled`, `AutoFinalSettlementTriggered`, `PlayerForfeited`.
-- **Modifiers**: `onlyOwner`, `roomExists`, `onlyHost`, `inStatus`.
-- **Require/revert handling**: custom errors for unauthorized calls, invalid room status, duplicate rooms, duplicate joins, insufficient deposits, invalid player counts, invalid settlement claims, and duplicate settlement execution.
-- **Role-based permission**: host-only game start, owner/host lobby removal, player-only settlement and rematch actions.
-- **Workflow design**: `Lobby -> Active -> Finished -> Closed`, with rematch support from `Finished`.
-- **Replay protection**: final settlement can only execute once per room epoch.
+- **State variables**：`owner`、`deposits`、`rooms`、`isPlayerInRoom`、`rematchVotes`、`roomEpoch`、`settledEpochs`、`roomIds`
+- **Struct**：`Room`
+- **Mapping / Array**：押金、房間、玩家狀態、再開投票、防重複結算、房間列表、房間玩家列表
+- **Events**：`Deposit`、`Withdrawal`、`RoomCreated`、`PlayerJoined`、`PlayerRemoved`、`RematchVoted`、`RematchExpired`、`GameStarted`、`GameFinished`、`ChallengeSettled`、`FinalWinnerSettled`、`FinalPenaltiesSettled`、`AutoFinalSettlementTriggered`、`PlayerForfeited`
+- **Modifiers**：`onlyOwner`、`roomExists`、`onlyHost`、`inStatus`
+- **錯誤處理**：使用 custom errors 處理未授權、狀態錯誤、房間不存在、重複加入、押金不足、玩家數錯誤、重複結算等情況
+- **權限設計**：房主才能開始遊戲；owner / 房主可管理大廳玩家；房間玩家才能參與再開與結算流程
+- **Workflow**：`Lobby -> Active -> Finished -> Closed`
+- **Replay protection**：同一房間同一局只能結算一次
 
-## AI Integration
+## AI 整合
 
-The AI server receives structured game state:
+AI server 會接收結構化遊戲狀態：
 
-- bot identity
-- current turn
-- bot hand
-- current claim rank
-- play pile count
-- discard pile count
-- passed players
-- last claim
-- seat summaries
+- 電腦玩家身份
+- 目前輪到誰
+- 電腦玩家手牌
+- 本輪喊牌點數
+- 出牌堆張數
+- 棄牌堆張數
+- 已 Pass 玩家
+- 上一手宣稱
+- 座位與手牌數摘要
 
-It returns a compact decision such as:
+AI 回傳簡短決策，例如：
 
 ```json
 { "action": "play", "rank": "A", "cards": ["A"] }
 ```
 
-or:
+或：
 
 ```json
 { "action": "challenge" }
 ```
 
-If the AI provider fails, the frontend falls back to local card-rule heuristics so the demo can continue.
+Provider 優先順序：
 
-AI request and response logs are written to:
+1. LM Studio 本地模型
+2. Google AI Studio / Gemma
+3. 本地 fallback 規則
+
+AI request / response 會寫入：
 
 ```text
 logs/ai-monitor.log
 ```
 
-## Validation
+## 驗證
 
-Run contract tests:
+執行合約測試：
 
 ```powershell
 npm run test
 ```
 
-Compile contracts:
+編譯合約：
 
 ```powershell
 npm run build
 ```
 
-Basic syntax checks:
+檢查 JavaScript 語法：
 
 ```powershell
 node --check frontend/app.js
@@ -194,6 +199,6 @@ node --check server/relayer.js
 node --check server/ai-player.js
 ```
 
-## Current Scope Notes
+## 目前範圍與限制
 
-This project demonstrates deck commitment and browser-side secure randomness, but it does not implement a full SRA mental-poker protocol. The original SRA design can be described as an advanced extension. The implemented version focuses on the course requirements: smart contract workflow, frontend integration, events, error handling, and AI/server integration.
+目前系統展示 WebCrypto 隨機洗牌與 deck commitment，但尚未完整實作 SRA mental poker。完整 SRA 需要多方加密、洗牌、局部解密與證明，可作為未來延伸。本版本主要聚焦課程要求：智慧合約 workflow、前端整合、事件顯示、錯誤處理與 AI server integration。
