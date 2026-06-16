@@ -18,41 +18,30 @@ contract Web3BullshitGame {
         address[] players;
     }
 
-    struct DebtNote {
-        bytes32 roomId;
-        address winner;
-        uint256 amount;
-        uint256 nonce;
-        uint256 expiration;
-    }
-
-    bytes32 public constant DEBT_NOTE_TYPEHASH = keccak256(
-        "DebtNote(bytes32 roomId,address winner,uint256 amount,uint256 nonce,uint256 expiration)"
-    );
-
-    bytes32 private immutable DOMAIN_SEPARATOR;
-    uint256 private immutable INITIAL_CHAIN_ID;
+    uint256 public constant REMATCH_WINDOW_SECONDS = 30;
 
     address public owner;
     mapping(address => uint256) public deposits;
     mapping(bytes32 => Room) private rooms;
     mapping(bytes32 => mapping(address => bool)) public isPlayerInRoom;
-    mapping(bytes32 => mapping(address => mapping(uint256 => bool))) public usedNonces;
+    mapping(bytes32 => mapping(address => bool)) public playerReady;
+    mapping(bytes32 => mapping(address => bool)) public rematchVotes;
+    mapping(bytes32 => uint256) public rematchVoteCount;
+    mapping(bytes32 => uint256) public rematchVoteStartedAt;
+    mapping(bytes32 => uint256) public roomEpoch;
+    mapping(bytes32 => mapping(uint256 => bool)) public settledEpochs;
     bytes32[] public roomIds;
 
     event Deposit(address indexed player, uint256 amount, uint256 newBalance);
     event Withdrawal(address indexed player, uint256 amount, uint256 remainingBalance);
     event RoomCreated(bytes32 indexed roomId, address indexed host, uint256 stakeRequired);
     event PlayerJoined(bytes32 indexed roomId, address indexed player, uint256 playerCount);
+    event PlayerRemoved(bytes32 indexed roomId, address indexed player, uint256 playerCount);
+    event PlayerReady(bytes32 indexed roomId, address indexed player, bool ready);
+    event RematchVoted(bytes32 indexed roomId, address indexed player, bool approve, uint256 yesVotes);
+    event RematchExpired(bytes32 indexed roomId, uint256 yesVotes);
     event GameStarted(bytes32 indexed roomId, bytes32 indexed deckCommitment);
     event GameFinished(bytes32 indexed roomId);
-    event DebtSettled(
-        bytes32 indexed roomId,
-        address indexed debtor,
-        address indexed winner,
-        uint256 amount,
-        uint256 nonce
-    );
     event ChallengeSettled(
         bytes32 indexed roomId,
         address indexed loser,
@@ -96,11 +85,11 @@ contract Web3BullshitGame {
     error NotPlayer();
     error InsufficientDeposit();
     error InvalidPlayerCount();
-    error ExpiredDebtNote();
-    error DebtNoteAlreadyUsed();
-    error InvalidSignature();
     error TransferFailed();
     error InvalidClaim();
+    error PlayersNotReady();
+    error RematchNotApproved();
+    error SettlementAlreadyExecuted();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -124,8 +113,6 @@ contract Web3BullshitGame {
 
     constructor() {
         owner = msg.sender;
-        INITIAL_CHAIN_ID = block.chainid;
-        DOMAIN_SEPARATOR = _buildDomainSeparator();
     }
 
     receive() external payable {
@@ -142,6 +129,7 @@ contract Web3BullshitGame {
         require(roomId != bytes32(0), "Room id is required");
         require(stakeRequired > 0, "Stake is required");
         if (rooms[roomId].status != RoomStatus.None) revert RoomAlreadyExists();
+        if (deposits[msg.sender] < stakeRequired) revert InsufficientDeposit();
 
         Room storage room = rooms[roomId];
         room.host = msg.sender;
@@ -170,18 +158,145 @@ contract Web3BullshitGame {
         emit PlayerJoined(roomId, msg.sender, room.players.length);
     }
 
+    function removeLobbyPlayer(bytes32 roomId, address player)
+        external
+        roomExists(roomId)
+    {
+        Room storage room = rooms[roomId];
+        if (room.status != RoomStatus.Lobby && room.status != RoomStatus.Finished) {
+            revert InvalidStatus(RoomStatus.Lobby, room.status);
+        }
+        if (msg.sender != room.host && msg.sender != owner) revert Unauthorized();
+        if (player == room.host) revert Unauthorized();
+        if (!isPlayerInRoom[roomId][player]) revert NotPlayer();
+
+        uint256 index = room.players.length;
+        for (uint256 i = 0; i < room.players.length; i++) {
+            if (room.players[i] == player) {
+                index = i;
+                break;
+            }
+        }
+        if (index == room.players.length) revert NotPlayer();
+
+        room.players[index] = room.players[room.players.length - 1];
+        room.players.pop();
+        isPlayerInRoom[roomId][player] = false;
+        playerReady[roomId][player] = false;
+        if (rematchVotes[roomId][player]) {
+            rematchVotes[roomId][player] = false;
+            rematchVoteCount[roomId] -= 1;
+            if (rematchVoteCount[roomId] == 0) {
+                rematchVoteStartedAt[roomId] = 0;
+            }
+        }
+        emit PlayerRemoved(roomId, player, room.players.length);
+    }
+
+    function voteRematch(bytes32 roomId, bool approve)
+        external
+        roomExists(roomId)
+        inStatus(roomId, RoomStatus.Finished)
+    {
+        if (!isPlayerInRoom[roomId][msg.sender]) revert NotPlayer();
+
+        bool previous = rematchVotes[roomId][msg.sender];
+        if (previous == approve) {
+            emit RematchVoted(roomId, msg.sender, approve, rematchVoteCount[roomId]);
+            return;
+        }
+
+        uint256 startedAt = rematchVoteStartedAt[roomId];
+        if (startedAt > 0) {
+            require(block.timestamp < startedAt + REMATCH_WINDOW_SECONDS, "Rematch window closed");
+        }
+
+        rematchVotes[roomId][msg.sender] = approve;
+        if (approve) {
+            if (rematchVoteStartedAt[roomId] == 0) {
+                rematchVoteStartedAt[roomId] = block.timestamp;
+            }
+            rematchVoteCount[roomId] += 1;
+        } else {
+            rematchVoteCount[roomId] -= 1;
+            if (rematchVoteCount[roomId] == 0) {
+                rematchVoteStartedAt[roomId] = 0;
+            }
+            playerReady[roomId][msg.sender] = false;
+            emit PlayerReady(roomId, msg.sender, false);
+        }
+        emit RematchVoted(roomId, msg.sender, approve, rematchVoteCount[roomId]);
+    }
+
+    function leaveLobbyRoom(bytes32 roomId)
+        external
+        roomExists(roomId)
+        inStatus(roomId, RoomStatus.Lobby)
+    {
+        Room storage room = rooms[roomId];
+        if (msg.sender == room.host) revert Unauthorized();
+        if (!isPlayerInRoom[roomId][msg.sender]) revert NotPlayer();
+
+        uint256 index = room.players.length;
+        for (uint256 i = 0; i < room.players.length; i++) {
+            if (room.players[i] == msg.sender) {
+                index = i;
+                break;
+            }
+        }
+        if (index == room.players.length) revert NotPlayer();
+
+        room.players[index] = room.players[room.players.length - 1];
+        room.players.pop();
+        isPlayerInRoom[roomId][msg.sender] = false;
+        playerReady[roomId][msg.sender] = false;
+        emit PlayerRemoved(roomId, msg.sender, room.players.length);
+    }
+
+    function setReady(bytes32 roomId, bool ready)
+        external
+        roomExists(roomId)
+    {
+        RoomStatus status = rooms[roomId].status;
+        require(status == RoomStatus.Lobby || status == RoomStatus.Finished, "Room is not readyable");
+        if (!isPlayerInRoom[roomId][msg.sender]) revert NotPlayer();
+
+        playerReady[roomId][msg.sender] = ready;
+        emit PlayerReady(roomId, msg.sender, ready);
+    }
+
     function startGame(bytes32 roomId, bytes32 deckCommitment)
         external
         roomExists(roomId)
         onlyHost(roomId)
-        inStatus(roomId, RoomStatus.Lobby)
     {
         require(deckCommitment != bytes32(0), "Deck commitment is required");
         Room storage room = rooms[roomId];
+        if (room.status != RoomStatus.Lobby && room.status != RoomStatus.Finished) {
+            revert InvalidStatus(RoomStatus.Lobby, room.status);
+        }
         if (room.players.length != 4) revert InvalidPlayerCount();
+        if (room.status == RoomStatus.Finished && rematchVoteCount[roomId] * 2 <= room.players.length) {
+            revert RematchNotApproved();
+        }
+        for (uint256 i = 0; i < room.players.length; i++) {
+            address player = room.players[i];
+            if (deposits[player] < room.stakeRequired) revert InsufficientDeposit();
+            if (!playerReady[roomId][player]) revert PlayersNotReady();
+        }
 
         room.deckCommitment = deckCommitment;
+        roomEpoch[roomId] += 1;
         room.status = RoomStatus.Active;
+        for (uint256 i = 0; i < room.players.length; i++) {
+            address player = room.players[i];
+            playerReady[roomId][player] = false;
+            if (rematchVotes[roomId][player]) {
+                rematchVotes[roomId][player] = false;
+            }
+        }
+        rematchVoteCount[roomId] = 0;
+        rematchVoteStartedAt[roomId] = 0;
         emit GameStarted(roomId, deckCommitment);
     }
 
@@ -209,12 +324,15 @@ contract Web3BullshitGame {
         external
         roomExists(roomId)
         onlyHost(roomId)
-        inStatus(roomId, RoomStatus.Active)
     {
+        Room storage room = rooms[roomId];
+        if (room.status != RoomStatus.Active && room.status != RoomStatus.Finished) {
+            revert InvalidStatus(RoomStatus.Active, room.status);
+        }
+        _markCurrentEpochSettled(roomId);
         if (!isPlayerInRoom[roomId][winner]) revert NotPlayer();
         require(amountPerLoser > 0, "Amount is required");
 
-        Room storage room = rooms[roomId];
         uint256 totalWon = 0;
         for (uint256 i = 0; i < room.players.length; i++) {
             address loser = room.players[i];
@@ -240,12 +358,16 @@ contract Web3BullshitGame {
     )
         external
         roomExists(roomId)
-        inStatus(roomId, RoomStatus.Active)
     {
+        Room storage room = rooms[roomId];
+        if (room.status != RoomStatus.Active && room.status != RoomStatus.Finished) {
+            revert InvalidStatus(RoomStatus.Active, room.status);
+        }
         if (!isPlayerInRoom[roomId][msg.sender] && msg.sender != owner) revert NotPlayer();
         if (!isPlayerInRoom[roomId][winner]) revert NotPlayer();
         require(losers.length == amounts.length, "Length mismatch");
         require(losers.length > 0, "Losers are required");
+        _markCurrentEpochSettled(roomId);
 
         uint256 totalWon = 0;
         for (uint256 i = 0; i < losers.length; i++) {
@@ -259,7 +381,7 @@ contract Web3BullshitGame {
         }
 
         deposits[winner] += totalWon;
-        rooms[roomId].status = RoomStatus.Finished;
+        room.status = RoomStatus.Finished;
         emit AutoFinalSettlementTriggered(roomId, winner, msg.sender, losers, amounts, totalWon);
         emit FinalPenaltiesSettled(roomId, winner, totalWon);
         emit GameFinished(roomId);
@@ -270,6 +392,7 @@ contract Web3BullshitGame {
         roomExists(roomId)
         inStatus(roomId, RoomStatus.Active)
     {
+        _markCurrentEpochSettled(roomId);
         if (!isPlayerInRoom[roomId][msg.sender]) revert NotPlayer();
         require(amountPerOpponent > 0, "Amount is required");
 
@@ -288,31 +411,6 @@ contract Web3BullshitGame {
         room.status = RoomStatus.Finished;
         emit PlayerForfeited(roomId, msg.sender, amountPerOpponent, totalPenalty);
         emit GameFinished(roomId);
-    }
-
-    function settleDebt(DebtNote calldata note, bytes calldata signature)
-        external
-        roomExists(note.roomId)
-    {
-        RoomStatus status = rooms[note.roomId].status;
-        require(status == RoomStatus.Active || status == RoomStatus.Finished, "Room is not settleable");
-        require(note.winner == msg.sender, "Only winner can settle");
-        require(note.amount > 0, "Amount is required");
-        if (block.timestamp > note.expiration) revert ExpiredDebtNote();
-        if (!isPlayerInRoom[note.roomId][note.winner]) revert NotPlayer();
-
-        bytes32 digest = getDebtNoteDigest(note);
-        address debtor = _recoverSigner(digest, signature);
-        if (debtor == address(0) || debtor == note.winner) revert InvalidSignature();
-        if (!isPlayerInRoom[note.roomId][debtor]) revert NotPlayer();
-        if (usedNonces[note.roomId][debtor][note.nonce]) revert DebtNoteAlreadyUsed();
-        if (deposits[debtor] < note.amount) revert InsufficientDeposit();
-
-        usedNonces[note.roomId][debtor][note.nonce] = true;
-        deposits[debtor] -= note.amount;
-        deposits[note.winner] += note.amount;
-
-        emit DebtSettled(note.roomId, debtor, note.winner, note.amount, note.nonce);
     }
 
     function settleChallenge(
@@ -368,10 +466,33 @@ contract Web3BullshitGame {
     function closeFinishedRoom(bytes32 roomId)
         external
         roomExists(roomId)
-        onlyHost(roomId)
         inStatus(roomId, RoomStatus.Finished)
     {
+        Room storage room = rooms[roomId];
+        if (msg.sender != room.host && msg.sender != owner) revert Unauthorized();
         rooms[roomId].status = RoomStatus.Closed;
+    }
+
+    function closeExpiredRematch(bytes32 roomId)
+        external
+        roomExists(roomId)
+        inStatus(roomId, RoomStatus.Finished)
+    {
+        Room storage room = rooms[roomId];
+        uint256 startedAt = rematchVoteStartedAt[roomId];
+        require(startedAt > 0, "Rematch was not started");
+        require(block.timestamp >= startedAt + REMATCH_WINDOW_SECONDS, "Rematch window is open");
+        if (rematchVoteCount[roomId] * 2 > room.players.length) revert RematchNotApproved();
+
+        room.status = RoomStatus.Closed;
+        emit RematchExpired(roomId, rematchVoteCount[roomId]);
+        emit GameFinished(roomId);
+    }
+
+    function _markCurrentEpochSettled(bytes32 roomId) private {
+        uint256 epoch = roomEpoch[roomId];
+        if (settledEpochs[roomId][epoch]) revert SettlementAlreadyExecuted();
+        settledEpochs[roomId][epoch] = true;
     }
 
     function transferOwnership(address newOwner) external onlyOwner {
@@ -399,56 +520,18 @@ contract Web3BullshitGame {
         return roomIds.length;
     }
 
-    function getDebtNoteDigest(DebtNote calldata note) public view returns (bytes32) {
-        bytes32 structHash = keccak256(
-            abi.encode(
-                DEBT_NOTE_TYPEHASH,
-                note.roomId,
-                note.winner,
-                note.amount,
-                note.nonce,
-                note.expiration
-            )
-        );
-        return keccak256(abi.encodePacked("\x19\x01", domainSeparator(), structHash));
-    }
-
-    function domainSeparator() public view returns (bytes32) {
-        if (block.chainid == INITIAL_CHAIN_ID) {
-            return DOMAIN_SEPARATOR;
+    function areAllPlayersReady(bytes32 roomId)
+        external
+        view
+        roomExists(roomId)
+        returns (bool)
+    {
+        Room storage room = rooms[roomId];
+        if (room.players.length != 4) return false;
+        for (uint256 i = 0; i < room.players.length; i++) {
+            if (!playerReady[roomId][room.players[i]]) return false;
         }
-        return _buildDomainSeparator();
+        return true;
     }
 
-    function _buildDomainSeparator() private view returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
-                keccak256(bytes("Web3BullshitGame")),
-                keccak256(bytes("1")),
-                block.chainid,
-                address(this)
-            )
-        );
-    }
-
-    function _recoverSigner(bytes32 digest, bytes calldata signature) private pure returns (address) {
-        if (signature.length != 65) revert InvalidSignature();
-
-        bytes32 r;
-        bytes32 s;
-        uint8 v;
-        assembly {
-            r := calldataload(signature.offset)
-            s := calldataload(add(signature.offset, 32))
-            v := byte(0, calldataload(add(signature.offset, 64)))
-        }
-
-        if (v < 27) {
-            v += 27;
-        }
-        if (v != 27 && v != 28) revert InvalidSignature();
-
-        return ecrecover(digest, v, r, s);
-    }
 }

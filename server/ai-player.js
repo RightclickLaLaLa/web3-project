@@ -91,6 +91,7 @@ function buildPrompt(state) {
     "規則：每次出 1 到 3 張；同一輪若已有喊牌點數，只能繼續喊同點數或 pass；鬼牌可當任意點數。",
     "如果目前不是你的出牌回合，而 lastClaim 存在，這次是在判斷要不要抓吹牛；此時只能回 challenge 或 pass，不要回 play。",
     "如果你手上完全沒有 lastClaim.rank 或鬼牌，且出牌堆已經有 4 張以上，應該偏向 challenge。",
+    "即使上一手只宣稱 1 張，如果你完全沒有該點數或鬼牌，且出牌堆已達 6 張以上，或對方快打完手牌，也應該提高懷疑，但不要每次都無腦 challenge。",
     "如果上一手宣稱 2 張以上、出牌堆已經有 6 張以上，應該偏向 challenge。",
     "若上一手明顯可疑，可以 challenge。若出牌堆太大且沒有可用牌，可以 pass。否則選 1 到 3 張手牌出牌，可誠實也可吹牛。",
     "回傳格式：{\"action\":\"play\",\"rank\":\"A\",\"cards\":[\"A\"]} 或 {\"action\":\"pass\"} 或 {\"action\":\"challenge\"}。",
@@ -135,8 +136,20 @@ function localRuleDecision(state) {
     const claimRank = String(lastClaim.rank || "").toUpperCase();
     const knownRank = hand.filter((card) => String(card).toUpperCase() === claimRank).length;
     const claimCount = Number(lastClaim.count || 0);
+    const handCountByActor = Number(
+      (Array.isArray(state.seats) ? state.seats : [])
+        .find((seat) => String(seat.player || "") === String(lastClaim.actor || ""))?.handCount || 99
+    );
     if (claimCount + knownRank + jokers > 6) return { action: "challenge", inferredFrom: "local-impossible" };
     if (claimCount >= 3 && Number(state.playPileCount || 0) >= 8) return { action: "challenge", inferredFrom: "local-large-pile" };
+    if (
+      claimCount === 1
+      && knownRank + jokers === 0
+      && Number(state.playPileCount || 0) >= (handCountByActor <= 3 ? 4 : 6)
+      && Math.random() < (handCountByActor <= 3 ? 0.46 : 0.32)
+    ) {
+      return { action: "challenge", inferredFrom: "local-single-suspicion" };
+    }
   }
 
   if (roundRank) {
@@ -240,8 +253,9 @@ async function callConfiguredModel(state) {
 
 const server = http.createServer(async (req, res) => {
   try {
+    const url = req.url?.startsWith("/ai/") ? req.url.slice("/ai".length) : req.url;
     if (req.method === "OPTIONS") return sendJson(res, 204, {});
-    if (req.method === "GET" && req.url === "/health") {
+    if (req.method === "GET" && url === "/health") {
       return sendJson(res, 200, {
         ok: true,
         provider: AI_PROVIDER,
@@ -252,7 +266,7 @@ const server = http.createServer(async (req, res) => {
         lmstudioModel: LMSTUDIO_MODEL
       });
     }
-    if (req.method === "POST" && req.url === "/bot-action") {
+    if (req.method === "POST" && url === "/bot-action") {
       const body = await readBody(req);
       const state = JSON.parse(body || "{}");
       writeAiLog("request", {

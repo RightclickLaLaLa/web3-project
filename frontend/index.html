@@ -1,10 +1,10 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-Hant">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Web3 吹牛遊戲 Demo</title>
-    <link rel="stylesheet" href="./styles.css?v=20260615-final-review-events" />
+    <link rel="stylesheet" href="./styles.css?v=20260616-room-event-sync" />
   </head>
   <body>
     <main class="app">
@@ -23,8 +23,8 @@
         </div>
         <div>
           <span>合約地址</span>
-          <strong id="contractAddressLabel">0x5fbdb2315678afecb367f032d93f642f64180aa3</strong>
-          <input id="contractAddress" type="hidden" value="0x5fbdb2315678afecb367f032d93f642f64180aa3" />
+          <strong id="contractAddressLabel">0x4826533b4897376654bb4d4ad88b7fafd0c98528</strong>
+          <input id="contractAddress" type="hidden" value="0x4826533b4897376654bb4d4ad88b7fafd0c98528" />
         </div>
         <div>
           <span>押金餘額</span>
@@ -50,7 +50,7 @@
       <nav class="flow-tabs" aria-label="遊戲流程">
         <button id="showLobbyButton" type="button" class="tab-button active">大廳</button>
         <button id="showGameButton" type="button" class="tab-button">遊戲</button>
-        <button id="showDebtButton" type="button" class="tab-button">債券結算</button>
+        <button id="showSettlementButton" type="button" class="tab-button">提款</button>
       </nav>
 
       <section class="section-shell app-view" id="lobbySection">
@@ -117,12 +117,19 @@
               <button id="joinRoomButton" class="secondary">加入房間</button>
             </div>
             <button id="refreshRoomButton" type="button" class="secondary">更新房間狀態</button>
+            <button id="readyButton" type="button" class="secondary">準備</button>
+            <div class="button-row">
+              <button id="leaveRoomButton" type="button" class="secondary">退出房間</button>
+              <button id="disbandRoomButton" type="button" class="danger">解散房間</button>
+            </div>
             <label>牌組承諾 Hash</label>
             <input id="deckCommitment" placeholder="留空會自動產生" />
             <div class="button-row">
               <button id="startGameButton">開始遊戲</button>
               <button id="addBotsButton" type="button" class="secondary">加入電腦玩家</button>
             </div>
+            <select id="removePlayerSelect" aria-label="選擇要移除的玩家"></select>
+            <button id="removeBotButton" type="button" class="secondary">移除玩家</button>
             <button id="clearHostedRoomButton" type="button" class="secondary">解除舊房間鎖</button>
           </article>
         </div>
@@ -239,7 +246,7 @@
             <strong id="challengeResult">尚未判定</strong>
           </div>
           <div class="full is-hidden">
-            <strong id="debtSuggestion"></strong>
+            <strong id="settlementSuggestion"></strong>
           </div>
           <div>
             <span>勝利者</span>
@@ -252,6 +259,7 @@
               <button id="rematchButton" type="button">再開一局</button>
               <button id="endGameButton" type="button" class="secondary">結束遊戲</button>
             </div>
+            <small id="rematchCountdown"></small>
           </div>
         </div>
       </section>
@@ -267,7 +275,7 @@
         </div>
       </div>
 
-      <section class="section-shell app-view is-hidden" id="debtSection">
+      <section class="section-shell app-view is-hidden" id="settlementSection">
         <div class="section-title">
           <p class="eyebrow">Final Settlement</p>
           <h2>押金餘額與領出</h2>
@@ -290,15 +298,9 @@
             <input id="settlementWinner" readonly placeholder="遊戲結束後自動代入" />
             <label>扣款明細</label>
             <textarea id="settlementPreview" readonly placeholder="遊戲結束後由系統自動結算"></textarea>
-            <button id="settleDebtButton" type="button" class="secondary">重送自動結算</button>
+            <button id="resendSettlementButton" type="button" class="secondary">重送自動結算</button>
             <button id="finishGameButton" type="button" class="secondary">結束遊戲</button>
-            <input id="winnerAddress" class="is-hidden" />
-            <input id="debtAmount" class="is-hidden" value="1" />
-            <input id="debtNonce" class="is-hidden" value="1" />
-            <input id="expirationSeconds" class="is-hidden" value="3600" />
-            <button id="signDebtButton" type="button" class="is-hidden">簽署展示債券</button>
-            <textarea id="signatureOutput" class="is-hidden"></textarea>
-            <textarea id="settleNoteInput" class="is-hidden" placeholder="internal debt payload"></textarea>
+            <textarea id="settleNoteInput" class="is-hidden" placeholder="internal settlement payload"></textarea>
           </article>
         </div>
       </section>
@@ -310,6 +312,6 @@
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
-    <script src="./app.js?v=20260615-final-review-events"></script>
+    <script src="./app.js?v=20260616-room-event-sync"></script>
   </body>
 </html>

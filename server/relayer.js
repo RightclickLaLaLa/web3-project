@@ -21,6 +21,10 @@ const abi = [
   "function deposit() payable",
   "function deposits(address player) view returns (uint256)",
   "function joinRoom(bytes32 roomId)",
+  "function setReady(bytes32 roomId,bool ready)",
+  "function voteRematch(bytes32 roomId,bool approve)",
+  "function removeLobbyPlayer(bytes32 roomId,address player)",
+  "function closeExpiredRematch(bytes32 roomId)",
   "function getRoom(bytes32 roomId) view returns (address host,uint256 stakeRequired,bytes32 deckCommitment,uint8 status,address[] players)",
   "function settleFinalPenalties(bytes32 roomId,address winner,address[] losers,uint256[] amounts)",
   "event AutoFinalSettlementTriggered(bytes32 indexed roomId,address indexed winner,address indexed submitter,address[] losers,uint256[] amounts,uint256 totalWon)"
@@ -99,6 +103,7 @@ async function depositAndJoinBot(payload) {
   const provider = new ethers.JsonRpcProvider(RPC_URL);
   const readContract = new ethers.Contract(CONTRACT_ADDRESS, abi, provider);
   const room = await readContract.getRoom(payload.roomId);
+  if (![1, 3].includes(Number(room.status))) throw new Error("Room is not editable");
   const players = Array.from(room.players).map((address) => ethers.getAddress(address));
   if (players.length >= 4) throw new Error("Room is already full");
   const bots = botWallets(provider);
@@ -132,6 +137,10 @@ async function depositAndJoinBot(payload) {
     txs.push({ type: "join", hash: joinTx.hash, blockNumber: joinReceipt.blockNumber });
   }
 
+  const readyTx = await contract.setReady(payload.roomId, true, { nonce: nonce++ });
+  const readyReceipt = await readyTx.wait();
+  txs.push({ type: "ready", hash: readyTx.hash, blockNumber: readyReceipt.blockNumber });
+
   const finalDeposit = await readContract.deposits(bot.address);
   const finalRoom = await readContract.getRoom(payload.roomId);
   return {
@@ -140,6 +149,80 @@ async function depositAndJoinBot(payload) {
     stakeRequired: stakeRequired.toString(),
     players: Array.from(finalRoom.players).map((address) => ethers.getAddress(address)),
     txs
+  };
+}
+
+async function removeBotFromRoom(payload) {
+  if (!payload?.roomId || !ethers.isHexString(payload.roomId, 32)) throw new Error("roomId must be bytes32");
+  if (!PRIVATE_KEY) throw new Error("RELAYER_PRIVATE_KEY is missing in .env");
+
+  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  const readContract = new ethers.Contract(CONTRACT_ADDRESS, abi, provider);
+  const room = await readContract.getRoom(payload.roomId);
+  if (Number(room.status) !== 1) throw new Error("Room is not in lobby");
+
+  const bots = botWallets(provider).map((wallet) => ethers.getAddress(wallet.address));
+  const players = Array.from(room.players).map((address) => ethers.getAddress(address));
+  const requestedBot = payload.botAddress ? assertAddress(payload.botAddress, "botAddress") : null;
+  const removableBot = requestedBot && players.includes(requestedBot) && bots.includes(requestedBot)
+    ? requestedBot
+    : [...players].reverse().find((player) => bots.includes(player));
+
+  if (!removableBot) throw new Error("No bot player is in this room");
+
+  const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+  const contract = new ethers.Contract(CONTRACT_ADDRESS, abi, wallet);
+  const nonce = await provider.getTransactionCount(wallet.address, "pending");
+  const tx = await contract.removeLobbyPlayer(payload.roomId, removableBot, { nonce });
+  const receipt = await tx.wait();
+  const finalRoom = await readContract.getRoom(payload.roomId);
+  return {
+    bot: removableBot,
+    hash: tx.hash,
+    blockNumber: receipt.blockNumber,
+    players: Array.from(finalRoom.players).map((address) => ethers.getAddress(address))
+  };
+}
+
+async function readyBotsInRoom(payload) {
+  if (!payload?.roomId || !ethers.isHexString(payload.roomId, 32)) throw new Error("roomId must be bytes32");
+
+  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  const readContract = new ethers.Contract(CONTRACT_ADDRESS, abi, provider);
+  const room = await readContract.getRoom(payload.roomId);
+  if (![1, 3].includes(Number(room.status))) throw new Error("Room is not readyable");
+
+  const players = playerSet(Array.from(room.players));
+  const bots = botWallets(provider).filter((wallet) => players.has(wallet.address.toLowerCase()));
+  const txs = [];
+  for (const bot of bots) {
+    const contract = new ethers.Contract(CONTRACT_ADDRESS, abi, bot);
+    let nonce = await provider.getTransactionCount(bot.address, "pending");
+    if (Number(room.status) === 3) {
+      const voteTx = await contract.voteRematch(payload.roomId, true, { nonce: nonce++ });
+      const voteReceipt = await voteTx.wait();
+      txs.push({ bot: bot.address, type: "rematch-vote", hash: voteTx.hash, blockNumber: voteReceipt.blockNumber });
+    }
+    const tx = await contract.setReady(payload.roomId, true, { nonce: nonce++ });
+    const receipt = await tx.wait();
+    txs.push({ bot: bot.address, type: "ready", hash: tx.hash, blockNumber: receipt.blockNumber });
+  }
+  return { readyBots: bots.map((bot) => bot.address), txs };
+}
+
+async function closeExpiredRematch(payload) {
+  if (!payload?.roomId || !ethers.isHexString(payload.roomId, 32)) throw new Error("roomId must be bytes32");
+  if (!PRIVATE_KEY) throw new Error("RELAYER_PRIVATE_KEY is missing in .env");
+
+  const provider = new ethers.JsonRpcProvider(RPC_URL);
+  const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+  const contract = new ethers.Contract(CONTRACT_ADDRESS, abi, wallet);
+  const nonce = await provider.getTransactionCount(wallet.address, "pending");
+  const tx = await contract.closeExpiredRematch(payload.roomId, { nonce });
+  const receipt = await tx.wait();
+  return {
+    hash: tx.hash,
+    blockNumber: receipt.blockNumber
   };
 }
 
@@ -168,6 +251,24 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const payload = JSON.parse(body || "{}");
       const result = await depositAndJoinBot(payload);
+      return sendJson(res, 200, { ok: true, result });
+    }
+    if (req.method === "POST" && url === "/bots/remove-room") {
+      const body = await readBody(req);
+      const payload = JSON.parse(body || "{}");
+      const result = await removeBotFromRoom(payload);
+      return sendJson(res, 200, { ok: true, result });
+    }
+    if (req.method === "POST" && url === "/bots/ready-room") {
+      const body = await readBody(req);
+      const payload = JSON.parse(body || "{}");
+      const result = await readyBotsInRoom(payload);
+      return sendJson(res, 200, { ok: true, result });
+    }
+    if (req.method === "POST" && url === "/rooms/close-expired-rematch") {
+      const body = await readBody(req);
+      const payload = JSON.parse(body || "{}");
+      const result = await closeExpiredRematch(payload);
       return sendJson(res, 200, { ok: true, result });
     }
     return sendJson(res, 404, { ok: false, error: "Not found" });

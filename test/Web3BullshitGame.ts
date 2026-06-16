@@ -26,6 +26,10 @@ describe("Web3BullshitGame", async function () {
     await game.write.joinRoom([roomId], { account: player2.account });
     await game.write.joinRoom([roomId], { account: player3.account });
     await game.write.joinRoom([roomId], { account: player4.account });
+    await game.write.setReady([roomId, true], { account: host.account });
+    await game.write.setReady([roomId, true], { account: player2.account });
+    await game.write.setReady([roomId, true], { account: player3.account });
+    await game.write.setReady([roomId, true], { account: player4.account });
     await game.write.startGame([roomId, deckCommitment], { account: host.account });
 
     return { game, host, player2, player3, player4, stake, roomId };
@@ -51,22 +55,22 @@ describe("Web3BullshitGame", async function () {
     );
   });
 
-  it("prevents the host from cancelling an active room", async function () {
-    const { game, host, roomId } = await startedGameFixture();
+  it("requires the host to deposit before creating a room", async function () {
+    const { game, host } = await networkHelpers.loadFixture(deployGame);
+    const stake = 100000000000000000000n;
+    const roomId = "0xaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae";
 
     await viem.assertions.revertWithCustomError(
-      game.write.cancelLobbyRoom([roomId], { account: host.account }),
+      game.write.createRoom([roomId, stake], { account: host.account }),
       game,
-      "InvalidStatus",
+      "InsufficientDeposit",
     );
   });
 
-  it("runs the room workflow and settles a signed debt note", async function () {
+  it("rechecks every player's deposit before starting", async function () {
     const { game, host, player2, player3, player4 } = await networkHelpers.loadFixture(deployGame);
-    const publicClient = await viem.getPublicClient();
     const stake = 100000000000000000000n;
-    const debtAmount = 50000000000000000n;
-    const roomId = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const roomId = "0xafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafaf";
     const deckCommitment = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     await game.write.deposit({ account: host.account, value: stake });
@@ -78,43 +82,198 @@ describe("Web3BullshitGame", async function () {
     await game.write.joinRoom([roomId], { account: player2.account });
     await game.write.joinRoom([roomId], { account: player3.account });
     await game.write.joinRoom([roomId], { account: player4.account });
-    await game.write.startGame([roomId, deckCommitment], { account: host.account });
 
-    const chainId = await publicClient.getChainId();
-    const expiration = BigInt(Math.floor(Date.now() / 1000) + 3600);
-    const note = {
-      roomId,
-      winner: host.account.address,
-      amount: debtAmount,
-      nonce: 1n,
-      expiration
-    };
+    await game.write.setReady([roomId, true], { account: host.account });
+    await game.write.setReady([roomId, true], { account: player2.account });
+    await game.write.setReady([roomId, true], { account: player3.account });
+    await game.write.setReady([roomId, true], { account: player4.account });
+    await game.write.withdraw([1n], { account: player4.account });
 
-    const signature = await player2.signTypedData({
-      account: player2.account,
-      domain: {
-        name: "Web3BullshitGame",
-        version: "1",
-        chainId,
-        verifyingContract: game.address
-      },
-      types: {
-        DebtNote: [
-          { name: "roomId", type: "bytes32" },
-          { name: "winner", type: "address" },
-          { name: "amount", type: "uint256" },
-          { name: "nonce", type: "uint256" },
-          { name: "expiration", type: "uint256" }
-        ]
-      },
-      primaryType: "DebtNote",
-      message: note
-    });
+    await viem.assertions.revertWithCustomError(
+      game.write.startGame([roomId, deckCommitment], { account: host.account }),
+      game,
+      "InsufficientDeposit",
+    );
+  });
 
-    await game.write.settleDebt([note, signature], { account: host.account });
+  it("requires every player to be ready before starting", async function () {
+    const { game, host, player2, player3, player4 } = await networkHelpers.loadFixture(deployGame);
+    const stake = 100000000000000000000n;
+    const roomId = "0xb0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0";
+    const deckCommitment = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-    assert.equal(await game.read.deposits([host.account.address]), stake + debtAmount);
-    assert.equal(await game.read.deposits([player2.account.address]), stake - debtAmount);
+    await game.write.deposit({ account: host.account, value: stake });
+    await game.write.deposit({ account: player2.account, value: stake });
+    await game.write.deposit({ account: player3.account, value: stake });
+    await game.write.deposit({ account: player4.account, value: stake });
+    await game.write.createRoom([roomId, stake], { account: host.account });
+    await game.write.joinRoom([roomId], { account: player2.account });
+    await game.write.joinRoom([roomId], { account: player3.account });
+    await game.write.joinRoom([roomId], { account: player4.account });
+    await game.write.setReady([roomId, true], { account: host.account });
+    await game.write.setReady([roomId, true], { account: player2.account });
+    await game.write.setReady([roomId, true], { account: player3.account });
+
+    await viem.assertions.revertWithCustomError(
+      game.write.startGame([roomId, deckCommitment], { account: host.account }),
+      game,
+      "PlayersNotReady",
+    );
+  });
+
+  it("can restart a finished room after every player readies again", async function () {
+    const { game, host, player2, player3, player4, roomId } = await startedGameFixture();
+    const nextDeckCommitment = "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+    await game.write.finishGame([roomId], { account: host.account });
+    await game.write.voteRematch([roomId, true], { account: host.account });
+    await game.write.voteRematch([roomId, true], { account: player2.account });
+    await game.write.voteRematch([roomId, true], { account: player3.account });
+    await game.write.setReady([roomId, true], { account: host.account });
+    await game.write.setReady([roomId, true], { account: player2.account });
+    await game.write.setReady([roomId, true], { account: player3.account });
+    await game.write.setReady([roomId, true], { account: player4.account });
+
+    assert.equal(await game.read.areAllPlayersReady([roomId]), true);
+    assert.equal(await game.read.rematchVoteCount([roomId]), 3n);
+    await game.write.startGame([roomId, nextDeckCommitment], { account: host.account });
+    const room = await game.read.getRoom([roomId]);
+    assert.equal(room[3], 2);
+    assert.equal(await game.read.areAllPlayersReady([roomId]), false);
+    assert.equal(await game.read.rematchVoteCount([roomId]), 0n);
+  });
+
+  it("requires a majority rematch vote before restarting a finished room", async function () {
+    const { game, host, player2, player3, player4, roomId } = await startedGameFixture();
+    const nextDeckCommitment = "0xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+
+    await game.write.finishGame([roomId], { account: host.account });
+    await game.write.voteRematch([roomId, true], { account: host.account });
+    await game.write.setReady([roomId, true], { account: host.account });
+    await game.write.setReady([roomId, true], { account: player2.account });
+    await game.write.setReady([roomId, true], { account: player3.account });
+    await game.write.setReady([roomId, true], { account: player4.account });
+
+    await viem.assertions.revertWithCustomError(
+      game.write.startGame([roomId, nextDeckCommitment], { account: host.account }),
+      game,
+      "RematchNotApproved",
+    );
+  });
+
+  it("closes a finished room when the rematch vote expires without majority", async function () {
+    const { game, host, roomId } = await startedGameFixture();
+
+    await game.write.finishGame([roomId], { account: host.account });
+    await game.write.voteRematch([roomId, true], { account: host.account });
+    await networkHelpers.time.increase(31);
+
+    await game.write.closeExpiredRematch([roomId], { account: host.account });
+    const room = await game.read.getRoom([roomId]);
+    assert.equal(room[3], 4);
+  });
+
+  it("rejects rematch votes after the 30 second window", async function () {
+    const { game, host, player2, roomId } = await startedGameFixture();
+
+    await game.write.finishGame([roomId], { account: host.account });
+    await game.write.voteRematch([roomId, true], { account: host.account });
+    await networkHelpers.time.increase(31);
+
+    await assert.rejects(
+      game.write.voteRematch([roomId, true], { account: player2.account }),
+      /Rematch window closed/,
+    );
+  });
+
+  it("prevents the host from cancelling an active room", async function () {
+    const { game, host, roomId } = await startedGameFixture();
+
+    await viem.assertions.revertWithCustomError(
+      game.write.cancelLobbyRoom([roomId], { account: host.account }),
+      game,
+      "InvalidStatus",
+    );
+  });
+
+  it("lets the host remove a non-host player from a lobby room", async function () {
+    const { game, host, player2, player3 } = await networkHelpers.loadFixture(deployGame);
+    const stake = 100000000000000000000n;
+    const roomId = "0xacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac";
+
+    await game.write.deposit({ account: host.account, value: stake });
+    await game.write.deposit({ account: player2.account, value: stake });
+    await game.write.deposit({ account: player3.account, value: stake });
+    await game.write.createRoom([roomId, stake], { account: host.account });
+    await game.write.joinRoom([roomId], { account: player2.account });
+    await game.write.joinRoom([roomId], { account: player3.account });
+
+    await game.write.removeLobbyPlayer([roomId, player2.account.address], { account: host.account });
+    const room = await game.read.getRoom([roomId]);
+    assert.equal(room[4].length, 2);
+    assert.equal(room[4].some((player) => player.toLowerCase() === player2.account.address.toLowerCase()), false);
+
+    await viem.assertions.revertWithCustomError(
+      game.write.removeLobbyPlayer([roomId, host.account.address], { account: host.account }),
+      game,
+      "Unauthorized",
+    );
+  });
+
+  it("lets the host remove a non-host player from a finished room", async function () {
+    const { game, host, player2, player3, roomId } = await startedGameFixture();
+
+    await game.write.finishGame([roomId], { account: host.account });
+    await game.write.voteRematch([roomId, true], { account: player2.account });
+    await game.write.voteRematch([roomId, true], { account: player3.account });
+
+    assert.equal(await game.read.rematchVoteCount([roomId]), 2n);
+    await game.write.removeLobbyPlayer([roomId, player2.account.address], { account: host.account });
+
+    const room = await game.read.getRoom([roomId]);
+    assert.equal(room[3], 3);
+    assert.equal(room[4].length, 3);
+    assert.equal(room[4].some((player) => player.toLowerCase() === player2.account.address.toLowerCase()), false);
+    assert.equal(await game.read.rematchVotes([roomId, player2.account.address]), false);
+    assert.equal(await game.read.rematchVoteCount([roomId]), 1n);
+  });
+
+  it("lets the owner remove a lobby player for relayed bot management", async function () {
+    const { game, host, player2 } = await networkHelpers.loadFixture(deployGame);
+    const stake = 100000000000000000000n;
+    const roomId = "0xb1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1";
+
+    await game.write.deposit({ account: host.account, value: stake });
+    await game.write.deposit({ account: player2.account, value: stake });
+    await game.write.createRoom([roomId, stake], { account: player2.account });
+    await game.write.joinRoom([roomId], { account: host.account });
+
+    await game.write.removeLobbyPlayer([roomId, host.account.address], { account: host.account });
+    const room = await game.read.getRoom([roomId]);
+    assert.equal(room[4].length, 1);
+    assert.equal(room[4][0].toLowerCase(), player2.account.address.toLowerCase());
+  });
+
+  it("lets a non-host player leave a lobby room", async function () {
+    const { game, host, player2 } = await networkHelpers.loadFixture(deployGame);
+    const stake = 100000000000000000000n;
+    const roomId = "0xadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadad";
+
+    await game.write.deposit({ account: host.account, value: stake });
+    await game.write.deposit({ account: player2.account, value: stake });
+    await game.write.createRoom([roomId, stake], { account: host.account });
+    await game.write.joinRoom([roomId], { account: player2.account });
+
+    await game.write.leaveLobbyRoom([roomId], { account: player2.account });
+    const room = await game.read.getRoom([roomId]);
+    assert.equal(room[4].length, 1);
+    assert.equal(room[4][0].toLowerCase(), host.account.address.toLowerCase());
+
+    await viem.assertions.revertWithCustomError(
+      game.write.leaveLobbyRoom([roomId], { account: host.account }),
+      game,
+      "Unauthorized",
+    );
   });
 
   it("settles a failed bluff challenge on-chain without loser signature", async function () {
@@ -196,6 +355,44 @@ describe("Web3BullshitGame", async function () {
     assert.equal(await game.read.deposits([host.account.address]), stake - amounts[0]);
     assert.equal(await game.read.deposits([player2.account.address]), stake - amounts[1]);
     assert.equal(await game.read.deposits([player3.account.address]), stake - amounts[2]);
+  });
+
+  it("marks the current room epoch as settled to guard against replayed settlement", async function () {
+    const { game, host, player2, player3, player4, roomId } = await startedGameFixture();
+    const amounts = [
+      1000000000000000000n,
+      2000000000000000000n,
+      3000000000000000000n
+    ];
+
+    assert.equal(await game.read.roomEpoch([roomId]), 1n);
+    assert.equal(await game.read.settledEpochs([roomId, 1n]), false);
+
+    await game.write.settleFinalPenalties(
+      [
+        roomId,
+        player4.account.address,
+        [host.account.address, player2.account.address, player3.account.address],
+        amounts
+      ],
+      { account: host.account }
+    );
+
+    assert.equal(await game.read.settledEpochs([roomId, 1n]), true);
+
+    await viem.assertions.revertWithCustomError(
+      game.write.settleFinalPenalties(
+        [
+          roomId,
+          player4.account.address,
+          [host.account.address, player2.account.address, player3.account.address],
+          amounts
+        ],
+        { account: player2.account }
+      ),
+      game,
+      "SettlementAlreadyExecuted",
+    );
   });
 
   it("allows any room player to submit final penalties", async function () {
