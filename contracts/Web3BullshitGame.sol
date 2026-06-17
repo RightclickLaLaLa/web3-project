@@ -116,6 +116,26 @@ contract Web3BullshitGame {
         deposit();
     }
 
+    function _closeRoomAndRemovePlayers(bytes32 roomId) internal {
+        Room storage room = rooms[roomId];
+        uint256 remaining = room.players.length;
+
+        while (remaining > 0) {
+            address player = room.players[remaining - 1];
+            room.players.pop();
+            remaining -= 1;
+            isPlayerInRoom[roomId][player] = false;
+            if (rematchVotes[roomId][player]) {
+                rematchVotes[roomId][player] = false;
+            }
+            emit PlayerRemoved(roomId, player, remaining);
+        }
+
+        rematchVoteCount[roomId] = 0;
+        rematchVoteStartedAt[roomId] = 0;
+        room.status = RoomStatus.Closed;
+    }
+
     function deposit() public payable {
         require(msg.value > 0, "Deposit must be greater than zero");
         deposits[msg.sender] += msg.value;
@@ -125,16 +145,20 @@ contract Web3BullshitGame {
     function createRoom(bytes32 roomId, uint256 stakeRequired) external {
         require(roomId != bytes32(0), "Room id is required");
         require(stakeRequired > 0, "Stake is required");
-        if (rooms[roomId].status != RoomStatus.None) revert RoomAlreadyExists();
+        RoomStatus previousStatus = rooms[roomId].status;
+        if (previousStatus != RoomStatus.None && previousStatus != RoomStatus.Closed) revert RoomAlreadyExists();
         if (deposits[msg.sender] < stakeRequired) revert InsufficientDeposit();
 
         Room storage room = rooms[roomId];
         room.host = msg.sender;
         room.stakeRequired = stakeRequired;
+        room.deckCommitment = bytes32(0);
         room.status = RoomStatus.Lobby;
         room.players.push(msg.sender);
         isPlayerInRoom[roomId][msg.sender] = true;
-        roomIds.push(roomId);
+        if (previousStatus == RoomStatus.None) {
+            roomIds.push(roomId);
+        }
 
         emit RoomCreated(roomId, msg.sender, stakeRequired);
         emit PlayerJoined(roomId, msg.sender, 1);
@@ -295,7 +319,7 @@ contract Web3BullshitGame {
         onlyHost(roomId)
         inStatus(roomId, RoomStatus.Lobby)
     {
-        rooms[roomId].status = RoomStatus.Closed;
+        _closeRoomAndRemovePlayers(roomId);
         emit GameFinished(roomId);
     }
 
@@ -449,7 +473,8 @@ contract Web3BullshitGame {
     {
         Room storage room = rooms[roomId];
         if (msg.sender != room.host && msg.sender != owner) revert Unauthorized();
-        rooms[roomId].status = RoomStatus.Closed;
+        _closeRoomAndRemovePlayers(roomId);
+        emit GameFinished(roomId);
     }
 
     function closeExpiredRematch(bytes32 roomId)
@@ -463,8 +488,9 @@ contract Web3BullshitGame {
         require(block.timestamp >= startedAt + REMATCH_WINDOW_SECONDS, "Rematch window is open");
         if (rematchVoteCount[roomId] * 2 > room.players.length) revert RematchNotApproved();
 
-        room.status = RoomStatus.Closed;
-        emit RematchExpired(roomId, rematchVoteCount[roomId]);
+        uint256 yesVotes = rematchVoteCount[roomId];
+        _closeRoomAndRemovePlayers(roomId);
+        emit RematchExpired(roomId, yesVotes);
         emit GameFinished(roomId);
     }
 

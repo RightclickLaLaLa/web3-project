@@ -390,7 +390,9 @@ h3 {
 }
 
 .player-list {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
   gap: 6px;
   min-height: 0;
   height: 116px;
@@ -399,6 +401,11 @@ h3 {
   padding-right: 5px;
   color: var(--text);
   overflow-wrap: anywhere;
+}
+
+.player-list span {
+  display: block;
+  line-height: 1.45;
 }
 
 #startReason,

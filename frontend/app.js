@@ -1,4 +1,4 @@
-﻿const CONTRACT_ADDRESS = "0x1291be112d480055dafd8a610b7d1e203891c274";
+﻿const CONTRACT_ADDRESS = "0xa4899d35897033b927acfcf422bc745916139776";
 const APP_VERSION = "20260617-wallet-funds-compact";
 const LOCAL_RPC_URL = "http://127.0.0.1:8545";
 const PUBLIC_RPC_HOST = "rightclickhohoho.dpdns.org";
@@ -52,7 +52,8 @@ let account;
 let connecting = false;
 let walletEventsReady = false;
 let tablePlayers = [];
-let roomViewCache = { roomId: null, players: [], status: null };
+let roomViewCache = { roomId: null, players: [], status: null, expiresAt: 0 };
+let roomPlayerListLock = { roomId: null, players: [], status: null, expectedCount: 0, expiresAt: 0 };
 let latestRoomSnapshot = null;
 let roomReadyStatus = new Map();
 let rematchYesVotes = 0;
@@ -121,7 +122,9 @@ const sameAddress = (a, b) => Boolean(a && b && a.toLowerCase() === b.toLowerCas
 const handKey = (addr) => (addr || "guest").toLowerCase();
 const isBot = (addr) => botPlayers.some((bot) => sameAddress(bot, addr));
 const nicknameKey = (addr = account) => `nickname:${handKey(addr)}`;
-const hostedRoomKey = (addr = account) => `hosted-room:${handKey(addr)}`;
+const contractKey = () => CONTRACT_ADDRESS.toLowerCase();
+const oldHostedRoomKey = (addr = account) => `hosted-room:${handKey(addr)}`;
+const hostedRoomKey = (addr = account) => `hosted-room:${contractKey()}:${handKey(addr)}`;
 
 function getRpcUrl() {
   if (window.location.hostname === PUBLIC_RPC_HOST) return `${window.location.origin}/rpc`;
@@ -336,10 +339,20 @@ function explainError(err) {
   if (message.includes("RematchNotApproved")) return "不能開始：再開一局投票尚未過半。";
   if (message.includes("InsufficientDeposit")) return "押金不足，請先存入足夠 ETH。";
   if (message.includes("Unauthorized")) return "沒有權限：只有房主可以開始或結束遊戲。";
-  if (message.includes("RoomNotFound")) return "找不到房間，請先建立房間。";
+  if (message.includes("RoomNotFound") || allMessages.includes("0xf2a86a9a")) return "找不到房間，請先建立房間。";
   if (message.includes("InvalidStatus")) return "房間狀態不允許這個操作。";
   if (message.includes("execution reverted")) return `合約拒絕交易：${message}`;
   return message;
+}
+
+function clearLegacyHostedRoomLock() {
+  if (!account) return;
+  const legacyKey = oldHostedRoomKey();
+  const scopedKey = hostedRoomKey();
+  const legacyRoom = localStorage.getItem(legacyKey);
+  if (!legacyRoom || localStorage.getItem(scopedKey)) return;
+  localStorage.removeItem(legacyKey);
+  log("偵測到舊合約的本機房間紀錄，已清除。請建立新房間。");
 }
 
 function syncContractAddress() {
@@ -464,13 +477,20 @@ async function dealRandomEncryptedHands() {
   $("deckCommitment").value = commitment;
   $("tableDeckCommitment").textContent = `${commitment.slice(0, 10)}...${commitment.slice(-8)}`;
   $("dealStatus").textContent = "已用 WebCrypto 產生隨機洗牌，並依玩家順序發牌。";
+  currentTurnIndex = startingPlayerIndex;
+  checkAllPlayersFourOfAKind();
   localStorage.setItem(
     `deal:${roomId()}`,
-    JSON.stringify({ commitment, salt, startingPlayerIndex, players: tablePlayers, hands: Object.fromEntries(playerHands) })
+    JSON.stringify({
+      commitment,
+      salt,
+      startingPlayerIndex,
+      players: tablePlayers,
+      hands: Object.fromEntries(playerHands),
+      discardPileCount,
+      discardedRanks: Array.from(discardedRanks)
+    })
   );
-  currentTurnIndex = startingPlayerIndex;
-
-  checkAllPlayersFourOfAKind();
   renderHand();
   renderSeats();
   renderTurn();
@@ -486,6 +506,10 @@ function restoreDealForRoom() {
     for (const [player, hand] of Object.entries(payload.hands)) {
       if (Array.isArray(hand)) setPlayerHand(player, hand);
     }
+    discardPileCount = Number(payload.discardPileCount) || 0;
+    discardedRanks.clear();
+    for (const rank of payload.discardedRanks || []) discardedRanks.add(rank);
+    checkAllPlayersFourOfAKind();
     if (payload.commitment) {
       $("deckCommitment").value = payload.commitment;
       $("tableDeckCommitment").textContent = `${payload.commitment.slice(0, 10)}...${payload.commitment.slice(-8)}`;
@@ -998,11 +1022,35 @@ function aiLabel(payload) {
   return payload.provider;
 }
 
+function aiDecisionDetail(decision) {
+  if (!decision) return "";
+  const parts = [];
+  if (typeof decision.reason === "string" && decision.reason.trim()) {
+    parts.push(`理由：${decision.reason.trim()}`);
+  }
+  if (Number.isFinite(Number(decision.risk))) {
+    parts.push(`風險 ${Number(decision.risk).toFixed(2)}`);
+  }
+  if (decision.inferredFrom) {
+    parts.push(`來源：${decision.inferredFrom}`);
+  }
+  if (Number.isFinite(Number(decision.suspicion))) {
+    parts.push(`懷疑值 ${Number(decision.suspicion).toFixed(2)}`);
+  }
+  return parts.length ? `（${parts.join("，")}）` : "";
+}
+
 function normalizeAiChoice(bot, decision) {
   const hand = getPlayerHand(bot);
   const action = String(decision?.action || "").toLowerCase();
-  if (action === "challenge" && lastClaim && !sameAddress(lastClaim.actor, bot)) return { action: "challenge" };
-  if (action === "pass" && roundRank && lastPlayedBy && !sameAddress(lastPlayedBy, bot)) return { action: "pass" };
+  const meta = {
+    reason: typeof decision?.reason === "string" ? decision.reason : undefined,
+    risk: Number.isFinite(Number(decision?.risk)) ? Number(decision.risk) : undefined,
+    inferredFrom: decision?.inferredFrom,
+    suspicion: Number.isFinite(Number(decision?.suspicion)) ? Number(decision.suspicion) : undefined
+  };
+  if (action === "challenge" && lastClaim && !sameAddress(lastClaim.actor, bot)) return { action: "challenge", ...meta };
+  if (action === "pass" && roundRank && lastPlayedBy && !sameAddress(lastPlayedBy, bot)) return { action: "pass", ...meta };
   const actor = String(decision?.actor || "");
   const claimActorLabel = lastClaim ? playerLabel(lastClaim.actor) : "";
   const describesLastClaim = Boolean(
@@ -1013,8 +1061,9 @@ function normalizeAiChoice(bot, decision) {
     && (!decision?.count || Number(decision.count) === Number(lastClaim.count))
     && !sameAddress(lastClaim.actor, bot)
   );
-  if (!action && describesLastClaim) return { action: "challenge" };
+  if (!action && describesLastClaim) return { action: "challenge", ...meta };
   if (action !== "play") return null;
+  if (!sameAddress(currentTurnPlayer(), bot)) return null;
 
   const rank = roundRank || String(decision?.rank || "").toUpperCase();
   const validRanks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"].filter((rank) => roundRank === rank || !discardedRanks.has(rank));
@@ -1031,7 +1080,7 @@ function normalizeAiChoice(bot, decision) {
     }
   }
   if (!selected.length || selected.length > 3) return null;
-  return { action: "play", rank, cards: selected };
+  return { action: "play", rank, cards: selected, ...meta };
 }
 
 function renderSeats() {
@@ -1230,7 +1279,8 @@ async function runBotChallengeRequest(bot, token, expectedRoundStamp, expectedAc
     const choice = normalizeAiChoice(bot, aiPayload.decision);
     if (!canAcceptChallengeRequest(bot, token, expectedRoundStamp, expectedActionStamp, expectedClaimSequence)) return false;
     wantsChallenge = choice?.action === "challenge";
-    log(`${playerLabel(bot)} 使用 ${aiLabel(aiPayload)} 判斷是否抓：${wantsChallenge ? "抓" : "不抓"}`);
+    if (!choice && aiPayload?.decision?.action) log(`${playerLabel(bot)} 的 ${aiLabel(aiPayload)} 抓牌判斷無效，視為不抓。`);
+    log(`${playerLabel(bot)} 使用 ${aiLabel(aiPayload)} 判斷是否抓：${wantsChallenge ? "抓" : "不抓"}${aiDecisionDetail(choice || aiPayload.decision)}`);
   } catch (err) {
     if (!canAcceptChallengeRequest(bot, token, expectedRoundStamp, expectedActionStamp, expectedClaimSequence)) return false;
     wantsChallenge = botShouldChallenge(bot);
@@ -1332,6 +1382,7 @@ function updateRoomPanel(room = null, reason = "請先查詢或建立房間。")
   if (!room) {
     latestRoomSnapshot = null;
     roomReadyStatus = new Map();
+    unlockRoomPlayerList();
     rematchYesVotes = 0;
     rematchVoteStartedAt = 0;
     clearRematchCountdown();
@@ -1378,9 +1429,32 @@ function roomLikeFromPlayers(players, status = 1) {
   };
 }
 
+function lockRoomPlayerList(players, status = 1, expectedCount = Array.from(players || []).length, ttlMs = 20000) {
+  const list = Array.from(players || []).slice(0, 4);
+  roomPlayerListLock = {
+    roomId: roomId(),
+    players: list,
+    status,
+    expectedCount,
+    expiresAt: Date.now() + ttlMs
+  };
+  roomViewCache = { roomId: roomId(), players: list, status, expiresAt: Date.now() + ttlMs };
+}
+
+function unlockRoomPlayerList() {
+  roomPlayerListLock = { roomId: null, players: [], status: null, expectedCount: 0, expiresAt: 0 };
+}
+
+function clearRoomViewState() {
+  roomViewCache = { roomId: null, players: [], status: null, expiresAt: 0 };
+  unlockRoomPlayerList();
+}
+
 function applyRoomPlayers(players, status = 1) {
   const list = Array.from(players || []).slice(0, 4);
-  roomViewCache = { roomId: roomId(), players: list, status };
+  if (roomPlayerListLock.roomId !== roomId()) {
+    roomViewCache = { roomId: roomId(), players: list, status, expiresAt: Date.now() + 8000 };
+  }
   ensureTablePlayers(list, false);
   updateRoomPanel(roomLikeFromPlayers(list, status));
   renderSeats();
@@ -1391,7 +1465,28 @@ function mergeRoomWithCache(room) {
   if (!room) return null;
   const currentRoomId = roomId();
   const players = Array.from(room.players);
-  roomViewCache = { roomId: currentRoomId, players, status: Number(room.status) };
+  const status = Number(room.status);
+  const cachedPlayers = roomViewCache.roomId === currentRoomId ? Array.from(roomViewCache.players || []) : [];
+  const lockedPlayers = roomPlayerListLock.roomId === currentRoomId ? Array.from(roomPlayerListLock.players || []) : [];
+  const cacheIsFresh = Number(roomViewCache.expiresAt || 0) > Date.now();
+  const lockIsActive = Number(roomPlayerListLock.expiresAt || 0) > Date.now();
+  const protectedPlayers = lockIsActive && lockedPlayers.length ? lockedPlayers : cachedPlayers;
+  const shouldKeepOptimisticPlayers = Boolean(
+    (botJoinInProgress || cacheIsFresh || lockIsActive)
+    && roomViewCache.roomId === currentRoomId
+    && Number(roomViewCache.status) === status
+    && protectedPlayers.length > players.length
+    && protectedPlayers.length <= 4
+    && players.every((player) => protectedPlayers.some((protectedPlayer) => sameAddress(protectedPlayer, player)))
+  );
+
+  if (shouldKeepOptimisticPlayers) {
+    const optimisticRoom = { ...room, players: protectedPlayers };
+    roomViewCache = { ...roomViewCache, roomId: currentRoomId, players: protectedPlayers, status };
+    return optimisticRoom;
+  }
+
+  roomViewCache = { roomId: currentRoomId, players, status, expiresAt: 0 };
   return room;
 }
 
@@ -1541,7 +1636,7 @@ async function refreshRoomStatus() {
     handleRoomSync(room);
     return room;
   } catch (_err) {
-    roomViewCache = { roomId: null, players: [], status: null };
+    clearRoomViewState();
     updateRoomPanel(null, "找不到房間，請先建立房間。");
     return null;
   }
@@ -1557,8 +1652,10 @@ function handleRoomSync(room) {
   if (status === 2 && isInRoom && !gameLocked && !winnerAddress) {
     gameLocked = true;
     ensureTablePlayers(players, false);
-    restoreDealForRoom();
     resetTurnState(players, false, startingIndexFromCommitment(room.deckCommitment, players.length));
+    restoreDealForRoom();
+    currentTurnIndex = startingIndexFromCommitment(room.deckCommitment, players.length);
+    renderTurn();
     openTable("遊戲進行中");
     log("房主已開始遊戲，已自動進入牌桌。");
     return;
@@ -1586,6 +1683,31 @@ async function waitForRoomPlayerCount(minCount, attempts = 10, delayMs = 350) {
 
 async function waitForRoomPlayerEventOrPoll({ eventName, player, expectedCount, timeoutMs = 5000, eventPromise = null }) {
   const expectedRoomId = roomId();
+  const game = getReadContract();
+  const readConfirmedRoom = async (attempts = 12, delayMs = 350) => {
+    let bestRoom = null;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const room = await game.getRoom(expectedRoomId);
+      bestRoom = room;
+      const players = Array.from(room.players);
+      const hasPlayer = !player || players.some((candidate) => sameAddress(candidate, player));
+      const removedPlayer = !player || players.every((candidate) => !sameAddress(candidate, player));
+      const countMatches = expectedCount === undefined || players.length === Number(expectedCount);
+      if (eventName === "PlayerJoined" && hasPlayer && countMatches) return { room, confirmed: true };
+      if (eventName === "PlayerRemoved" && removedPlayer && countMatches) return { room, confirmed: true };
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    return { room: bestRoom, confirmed: false };
+  };
+  const applyConfirmedRoom = async ({ room, confirmed }) => {
+    if (confirmed) unlockRoomPlayerList();
+    const mergedRoom = mergeRoomWithCache(room);
+    updateRoomPanel(mergedRoom);
+    if (mergedRoom) await updateReadyStatus(mergedRoom);
+    if (mergedRoom) handleRoomSync(mergedRoom);
+    return mergedRoom;
+  };
+
   try {
     if (eventPromise) {
       await eventPromise;
@@ -1598,25 +1720,9 @@ async function waitForRoomPlayerEventOrPoll({ eventName, player, expectedCount, 
         return true;
       }, timeoutMs);
     }
-    return await refreshRoomStatus();
+    return await applyConfirmedRoom(await readConfirmedRoom());
   } catch (_err) {
-    const game = getReadContract();
-    let bestRoom = null;
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      const room = mergeRoomWithCache(await game.getRoom(expectedRoomId));
-      bestRoom = room;
-      const players = Array.from(room.players);
-      const hasPlayer = !player || players.some((candidate) => sameAddress(candidate, player));
-      const removedPlayer = !player || players.every((candidate) => !sameAddress(candidate, player));
-      const countMatches = expectedCount === undefined || players.length === Number(expectedCount);
-      if (eventName === "PlayerJoined" && hasPlayer && countMatches) break;
-      if (eventName === "PlayerRemoved" && removedPlayer && countMatches) break;
-      await new Promise((resolve) => setTimeout(resolve, 400));
-    }
-    updateRoomPanel(bestRoom);
-    if (bestRoom) await updateReadyStatus(bestRoom);
-    if (bestRoom) handleRoomSync(bestRoom);
-    return bestRoom;
+    return await applyConfirmedRoom(await readConfirmedRoom(12, 400));
   }
 }
 
@@ -1716,6 +1822,7 @@ async function restoreWalletSession() {
   contract = new ethers.Contract(CONTRACT_ADDRESS, abi, signer);
   localStorage.setItem("lastWalletAddress", account);
   $("walletAddress").textContent = account;
+  clearLegacyHostedRoomLock();
   if ($("seatYou")) $("seatYou").textContent = short(account);
   updateNicknameInput();
   setupWalletEvents();
@@ -1762,6 +1869,7 @@ async function connectWallet() {
     account = await signer.getAddress();
     localStorage.setItem("lastWalletAddress", account);
     $("walletAddress").textContent = account;
+    clearLegacyHostedRoomLock();
     if ($("seatYou")) $("seatYou").textContent = short(account);
     log(`錢包已連接：${account}`);
     updateNicknameInput();
@@ -1802,6 +1910,7 @@ function setupWalletEvents() {
     contract = new ethers.Contract(CONTRACT_ADDRESS, abi, signer);
     localStorage.setItem("lastWalletAddress", account);
     $("walletAddress").textContent = account;
+    clearLegacyHostedRoomLock();
     if ($("seatYou")) $("seatYou").textContent = short(account);
     updateNicknameInput();
     log(`已切換玩家錢包：${account}`);
@@ -1877,9 +1986,9 @@ wire("createRoomButton", async () => {
     return;
   }
   await cancelHostedLobbyRoomBeforeNewRoom();
-  roomViewCache = { roomId: null, players: [], status: null };
+  clearRoomViewState();
   const existing = await refreshRoomStatus();
-  if (existing) {
+  if (existing && Number(existing.status) !== 4) {
     log("房間已存在，請改用新房號或加入房間。");
     return;
   }
@@ -1930,7 +2039,7 @@ wire("leaveRoomButton", async () => {
   if (sameAddress(room.host, account)) return log("退出失敗：房主請使用「解散房間」。");
   if (Number(room.status) !== 1) return log("退出失敗：只有大廳等待中可以直接退出；遊戲中請使用認輸退出。");
   await wait(await game.leaveLobbyRoom(roomId(), await txOverrides()), "退出房間");
-  roomViewCache = { roomId: null, players: [], status: null };
+  clearRoomViewState();
   resetTurnState([], true);
   await refreshRoomStatus();
 });
@@ -1948,7 +2057,7 @@ wire("disbandRoomButton", async () => {
     await wait(await game.closeFinishedRoom(roomId(), await txOverrides()), "關閉已結束房間");
   }
   localStorage.removeItem(hostedRoomKey());
-  roomViewCache = { roomId: null, players: [], status: null };
+  clearRoomViewState();
   roomReadyStatus = new Map();
   botMode = false;
   gameLocked = false;
@@ -1991,6 +2100,7 @@ async function startGameConfirmed() {
     return log(`不能開始：玩家押金不足：${details}。`);
   }
   ensureTablePlayers(playersBeforeStart, false);
+  resetTurnState(playersBeforeStart, false);
   const dealt = await dealRandomEncryptedHands();
   if (!dealt) return;
   const commitment = $("deckCommitment").value.trim() || ethers.keccak256(ethers.toUtf8Bytes(`deck:${Date.now()}`));
@@ -2003,7 +2113,11 @@ async function startGameConfirmed() {
   updateRoomPanel(startedRoom);
   botMode = startedPlayers.some(isBot);
   gameLocked = true;
-  resetTurnState(startedPlayers, false, startingIndexFromCommitment(commitment, startedPlayers.length));
+  ensureTablePlayers(startedPlayers, false);
+  currentTurnIndex = startingIndexFromCommitment(commitment, startedPlayers.length);
+  renderSeats();
+  renderTurn();
+  updatePileDisplay();
   openTable("遊戲進行中");
 }
 
@@ -2147,7 +2261,7 @@ wire("rematchButton", startRematchRound);
 wire("endGameButton", () => endCurrentGameView("遊戲已結束。"));
 wire("clearHostedRoomButton", () => {
   if (account) localStorage.removeItem(hostedRoomKey());
-  roomViewCache = { roomId: null, players: [], status: null };
+  clearRoomViewState();
   $("roomText").value = makeRoomName();
   $("deckCommitment").value = "";
   botMode = false;
@@ -2259,6 +2373,7 @@ $("addBotsButton").onclick = async () => {
     botMode = true;
     if (Array.isArray(result.players)) {
       relayerPlayers = result.players;
+      lockRoomPlayerList(relayerPlayers, 1, expectedCount);
       applyRoomPlayers(relayerPlayers, 1);
     }
 
@@ -2309,11 +2424,17 @@ $("removeBotButton").onclick = async () => {
     log(`正在移除 ${playerLabel(target)}...`);
     if (isBot(target)) {
       const result = await relayerRemoveBot(target);
-      if (Array.isArray(result.players)) applyRoomPlayers(result.players, Number(room.status));
+      if (Array.isArray(result.players)) {
+        lockRoomPlayerList(result.players, Number(room.status), Math.max(0, players.length - 1));
+        applyRoomPlayers(result.players, Number(room.status));
+      }
     } else {
       const game = await getContract();
       await wait(await game.removeLobbyPlayer(roomId(), target, await txOverrides()), "移除玩家");
       await setOffchainReady(target, false).catch(() => {});
+      const expectedPlayers = players.filter((player) => !sameAddress(player, target));
+      lockRoomPlayerList(expectedPlayers, Number(room.status), Math.max(0, players.length - 1));
+      applyRoomPlayers(expectedPlayers, Number(room.status));
     }
     await waitForRoomPlayerEventOrPoll({
       eventName: "PlayerRemoved",
@@ -2347,7 +2468,7 @@ $("lookupBalanceButton").onclick = async () => {
 };
 $("newRoomButton").onclick = async () => {
   await cancelHostedLobbyRoomBeforeNewRoom({ includeCurrent: true });
-  roomViewCache = { roomId: null, players: [], status: null };
+  clearRoomViewState();
   botMode = false;
   gameLocked = false;
   $("roomText").value = makeRoomName();
@@ -2391,12 +2512,26 @@ function validateClaim(player, count, rank, selectedCount) {
   return true;
 }
 
+function normalizeSelectedIndexes(selectedIndexes, handLength) {
+  const normalized = [...selectedIndexes]
+    .map(Number)
+    .filter((index) => Number.isInteger(index) && index >= 0 && index < handLength)
+    .sort((a, b) => a - b);
+  return [...new Set(normalized)];
+}
+
 function applyClaim(player, count, rank, selectedIndexesAscending) {
   clearBotTimer();
   clearBotTurnInFlight();
   clearBotChallengeTimers();
   if (!sameAddress(currentTurnPlayer(), player)) {
     log(`出牌失敗：目前輪到 ${playerLabel(currentTurnPlayer())}。`);
+    return false;
+  }
+  const handBeforePlay = [...getPlayerHand(player)];
+  const normalizedIndexes = normalizeSelectedIndexes(selectedIndexesAscending, handBeforePlay.length);
+  if (normalizedIndexes.length !== count || normalizedIndexes.length !== selectedIndexesAscending.length) {
+    log("出牌失敗：選牌資料不合法，請重新選牌。");
     return false;
   }
   actionStamp += 1;
@@ -2411,9 +2546,12 @@ function applyClaim(player, count, rank, selectedIndexesAscending) {
     clearChallengeWindowTimer();
   }
   closeChallengeableTableLogs();
-  const handBeforePlay = [...getPlayerHand(player)];
-  const selectedIndexes = [...selectedIndexesAscending].sort((a, b) => b - a);
-  const actualCards = selectedIndexesAscending.map((index) => handBeforePlay[index]).filter(Boolean);
+  const selectedIndexes = [...normalizedIndexes].sort((a, b) => b - a);
+  const actualCards = normalizedIndexes.map((index) => handBeforePlay[index]);
+  if (actualCards.length !== count) {
+    log("出牌失敗：選牌資料不完整，請重新選牌。");
+    return false;
+  }
 
   $("currentClaim").textContent = `${count} 張 ${rank}`;
   $("lastMove").textContent = `${playerLabel(player)} 宣稱出了 ${count} 張 ${rank}`;
@@ -2663,7 +2801,8 @@ async function runBotAction(expectedRoundStamp = roundStamp, expectedActionStamp
     if (expectedRoundStamp !== roundStamp) return false;
     if (expectedActionStamp !== actionStamp) return false;
     if (inFlightKey && botTurnInFlight !== inFlightKey) return false;
-    if (choice) log(`${playerLabel(bot)} 使用 ${aiLabel(aiPayload)} 決策：${choice.action}`);
+    if (choice) log(`${playerLabel(bot)} 使用 ${aiLabel(aiPayload)} 決策：${choice.action}${aiDecisionDetail(choice)}`);
+    else if (aiPayload?.decision) log(`${playerLabel(bot)} 的 ${aiLabel(aiPayload)} 回覆無效，改用本地規則。`);
   } catch (err) {
     if (expectedRoundStamp !== roundStamp) return false;
     if (expectedActionStamp !== actionStamp) return false;
@@ -2746,7 +2885,7 @@ $("forfeitButton").onclick = async () => {
     localStorage.removeItem(hostedRoomKey());
     $("roomText").value = makeRoomName();
     $("deckCommitment").value = "";
-    roomViewCache = { roomId: null, players: [], status: null };
+    clearRoomViewState();
     resetTurnState(account ? [account] : [], true);
     updateRoomPanel(null, "已解除本機遊戲狀態，可以建立新房間。");
     $("tableStatus").textContent = "已退出";
@@ -2869,4 +3008,5 @@ async function initApp() {
 }
 
 initApp();
+
 

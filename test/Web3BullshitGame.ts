@@ -43,12 +43,33 @@ describe("Web3BullshitGame", async function () {
     await game.write.cancelLobbyRoom([roomId], { account: host.account });
     const room = await game.read.getRoom([roomId]);
     assert.equal(room[3], 4);
+    assert.equal(room[4].length, 0);
+    assert.equal(await game.read.isPlayerInRoom([roomId, host.account.address]), false);
 
     await viem.assertions.revertWithCustomError(
       game.write.joinRoom([roomId], { account: player2.account }),
       game,
       "InvalidStatus",
     );
+  });
+
+  it("allows a closed room id to be reused after disbanding", async function () {
+    const { game, host } = await networkHelpers.loadFixture(deployGame);
+    const stake = 100000000000000000000n;
+    const roomId = "0xacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac";
+
+    await game.write.deposit({ account: host.account, value: stake });
+    await game.write.createRoom([roomId, stake], { account: host.account });
+    await game.write.cancelLobbyRoom([roomId], { account: host.account });
+    await game.write.createRoom([roomId, stake], { account: host.account });
+
+    const room = await game.read.getRoom([roomId]);
+    assert.equal(room[3], 1);
+    assert.deepEqual(
+      room[4].map((player) => player.toLowerCase()),
+      [host.account.address.toLowerCase()],
+    );
+    assert.equal(await game.read.isPlayerInRoom([roomId, host.account.address]), true);
   });
 
   it("requires the host to deposit before creating a room", async function () {
@@ -118,7 +139,7 @@ describe("Web3BullshitGame", async function () {
   });
 
   it("closes a finished room when the rematch vote expires without majority", async function () {
-    const { game, host, roomId } = await startedGameFixture();
+    const { game, host, player2, roomId } = await startedGameFixture();
 
     await game.write.finishGame([roomId], { account: host.account });
     await game.write.voteRematch([roomId, true], { account: host.account });
@@ -127,6 +148,22 @@ describe("Web3BullshitGame", async function () {
     await game.write.closeExpiredRematch([roomId], { account: host.account });
     const room = await game.read.getRoom([roomId]);
     assert.equal(room[3], 4);
+    assert.equal(room[4].length, 0);
+    assert.equal(await game.read.isPlayerInRoom([roomId, host.account.address]), false);
+    assert.equal(await game.read.isPlayerInRoom([roomId, player2.account.address]), false);
+  });
+
+  it("removes all players when closing a finished room", async function () {
+    const { game, host, player2, roomId } = await networkHelpers.loadFixture(startedGameFixture);
+
+    await game.write.finishGame([roomId], { account: host.account });
+    await game.write.closeFinishedRoom([roomId], { account: host.account });
+
+    const room = await game.read.getRoom([roomId]);
+    assert.equal(room[3], 4);
+    assert.equal(room[4].length, 0);
+    assert.equal(await game.read.isPlayerInRoom([roomId, host.account.address]), false);
+    assert.equal(await game.read.isPlayerInRoom([roomId, player2.account.address]), false);
   });
 
   it("rejects rematch votes after the 30 second window", async function () {
